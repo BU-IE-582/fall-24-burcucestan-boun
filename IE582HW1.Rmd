@@ -1,0 +1,493 @@
+---
+title: "IE582 Homework 1: Antenna Design Analysis"
+author: "Burcu Çeştan - 2023702012"
+date: "2024-11-4"
+output: html_document
+---
+
+
+## 1. Introduction
+
+This report explores the impact of antenna design parameters on the S11 behavior using Principal Component Analysis (PCA) for dimensionality reduction and linear regression modeling for prediction. Given the complexity and computational cost of traditional electromagnetic simulations, machine learning provides an efficient way to model the relationship between design parameters and antenna performance. The goal is to identify key design parameters and simplify the regression task by predicting S11 at specific frequency points.
+
+## 2. Data Overview
+
+The data includes design parameters and S11 real and imaginary parts, which are essential for analyzing the antenna's performance across different frequency points.
+
+The datasets used in this analysis include:
+
+- **Design Parameters**: 11 variables representing various characteristics of the antenna's geometry and material properties.
+- **Real Part of S11**: The real component of the S11 parameter, measured across multiple frequency points, used to evaluate the antenna’s performance in terms of power reflection.
+- **Imaginary Part of S11**: The imaginary component of the S11 parameter, corresponding to the reactive part of the impedance, also measured across the same frequency points to assess the antenna’s behavior in the frequency domain.
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+# Load necessary libraries
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(FactoMineR)
+library(factoextra)
+library(tidyverse)
+library(caret)
+```
+
+```{r load}
+input_data <- read_csv("/Users/burcucestan/Desktop/HW1/hw1_files/hw1_input.csv", show_col_types = FALSE)
+real_s11 <- read_csv("/Users/burcucestan/Desktop/HW1/hw1_files/hw1_real.csv" , show_col_types = FALSE)
+img_s11 <- read_csv("/Users/burcucestan/Desktop/HW1/hw1_files/hw1_img.csv", show_col_types = FALSE)
+
+#combine the data
+suppressMessages({
+  data <- bind_cols(input_data, real_s11, img_s11)
+})
+```
+
+```{r load-data}
+
+# Ensure all variables are on the same scale before performing PCA.
+standardized_data <- scale(data)
+
+# The mean and standard deviation of each variable were checked after standardization to confirm that all variables have a mean close to 0 and a standard deviation close to 1. This ensures that no single variable dominates the PCA due to scale differences.
+
+#apply(standardized_data, 2, mean) -- I commented them since this is too long
+#apply(standardized_data, 2, sd)
+
+# Conduct PCA on the standardized data to identify main components.
+pca_analysis <- prcomp(standardized_data, center = TRUE, scale. = TRUE)
+
+
+# Display a summary of PCA
+# The summary shows the variance explained by each principal component.
+summary(pca_analysis)
+
+
+
+#We are selecting the first four components (PC1, PC2, PC3, and PC4) because together they explain approximately 87.03% of the total variance in the data.
+
+# Create a data frame for individual variance and cumulative variance
+variance <- data.frame(
+  Component = paste0("PC", 1:4),
+  Variance_Ratio = (summary(pca_analysis)$importance[2, 1:4]),
+  Cumulative_Ratio = cumsum(summary(pca_analysis)$importance[2, 1:4])
+)
+
+
+print(variance)
+
+
+```
+
+
+
+```{r loadings}
+
+# Display the loadings of each parameter to the first 4 principal components
+loadings <- pca_analysis$rotation[1:11, 1:4]
+loadings_df <- as.data.frame(loadings)
+rownames(loadings_df) <- colnames(data)[1:11]
+colnames(loadings_df) <- paste0("PC", 1:4)
+
+print(loadings_df)
+
+# The loadings indicate the contribution of each design parameter to the principal components. High loadings suggest that specific parameters play a more significant role in that component's variance, offering insights into which features are most relevant for the antenna's electromagnetic behavior.
+```
+
+
+## Answers to Research Questions
+
+#### Can we reduce the complexity of the design space using PCA?
+
+Yes, PCA can help reduce the complexity of the design space by transforming the original parameters into a smaller set of principal components. These components capture the maximum variance within the data, meaning they represent the most significant patterns or relationships. By analyzing the loadings (contributions of each original parameter to the principal components), we can identify which parameters most influence the variance, potentially highlighting those that most impact the S11 response. Here, by selecting the first four principal components, we capture approximately 87% of the total variance. This indicates that we can significantly reduce the complexity of the design space while retaining a substantial amount of the information, making the analysis and modeling more manageable.
+
+#### How much of the total variance is explained by the principal components?
+
+The total variance explained by the principal components is given by the cumulative variance ratio of the selected principal components. Based on our choice of the first four principal components, which cumulatively explain around 87% of the total variance (from the PCA results), this means that these four components effectively represent the majority of the information in the original parameter space.
+
+
+#### What insights can we draw from the PCA regarding the relationship between geometry and electromagnetic behavior?
+
+The loadings suggest that particular geometric and material parameters, such as "height of substrate," "dielectric constant of substrate," "width of patch," and "length of patch," are key contributors to the variance captured by the principal components (PC1 to PC4).
+
+**PC1**
+In PC1, the most influential factors are "width of patch" (-0.0598) and "height of substrate" (-0.0644), which exhibit the highest loadings. Additionally, "dielectric constant of substrate" (-0.0273) moderately impacts this component, indicating that substrate properties are integral to the primary variance pattern. Conversely, "length of patch" and "height of patch" have minimal impact on PC1, as their loadings are close to zero.
+
+**PC2**
+The parameters with the strongest influence on PC2 are "radius of the probe" (-0.0283) and "c_probe" (-0.0262), suggesting that this component is primarily shaped by probe-related aspects. The contributions of "width of patch" (0.0139) and "dielectric constant of substrate" (0.0098) are lower, indicating that geometric and material factors play a secondary role in this variance pattern.
+
+**PC3**
+In PC3, the largest contributors are "c_probe" (-0.0373), "dielectric constant of substrate" (0.0368), "width of patch" (0.0365), and "height of substrate" (0.0302). The presence of both positive and negative loadings implies opposing influences, where certain parameters offset the effects of others. This suggests a complex interaction, particularly between probe capacitance and substrate properties.
+
+**PC4**
+For PC4, the main contributors are "radius of the probe" (0.0275), "length of patch" (0.0236), and "c_probe" (0.0247). This component appears to be driven by both probe characteristics and specific geometric dimensions.
+
+In summary, modifying these key parameters—particularly those that dominate the loadings for each principal component—could meaningfully impact the antenna's performance, especially with respect to optimizing the s11 response.
+
+### 3.2. Frequency Selection
+
+```{r frequency selection}
+
+# Lower magnitude values indicate less signal loss, meaning the antenna operates efficiently at that frequency.
+# Therefore, we calculate the magnitude to identify the resonance frequencies (minimum points of |S11|).
+
+# Specify the number of designs to plot
+num_designs <- 10  # Set this to the desired number of designs
+
+# Calculate the magnitude of S11 (|S11|)
+magnitude_s11 <- sqrt(real_s11^2 + img_s11^2)
+
+# Create a combined data frame for plotting multiple designs in one plot
+plot_data <- data.frame(
+  Frequency = rep(1:ncol(magnitude_s11), times = num_designs),  # Repeat frequency index for each design
+  Magnitude = as.vector(t(magnitude_s11[1:num_designs, ])),  # Stack magnitude values for the selected designs
+  Design = rep(paste("Design", 1:num_designs), each = ncol(magnitude_s11))  # Label each design
+)
+
+# Plot using ggplot2 with different colors for each design
+library(ggplot2)
+
+ggplot(plot_data, aes(x = Frequency, y = Magnitude, color = Design)) +
+  geom_line() +
+  labs(title = "S11 Magnitude for Multiple Designs",
+       x = "Frequency Index",
+       y = "|S11| Magnitude") +
+  theme_minimal() +
+  scale_color_manual(values = rainbow(num_designs))  # Use rainbow colors for a range of colors
+
+# Initialize a vector to store minimum indices for each design
+min_indices <- integer()
+
+# Loop through each design to find the index of the minimum |S11| magnitude
+for (i in 1:nrow(magnitude_s11)) {
+  min_index <- which.min(magnitude_s11[i, ])  # Find the index of the minimum value for each design
+  min_indices <- c(min_indices, min_index)  # Append the result to the vector
+}
+
+print(min_indices)
+
+# Count the frequency of each minimum index to find common minimum points
+min_index_counts <- table(min_indices)
+print(min_index_counts)  # Print frequency of minimum points across designs
+
+# Select the most common minimum indices
+selected_indices <- as.numeric(names(min_index_counts)[min_index_counts >= 3])  # Select indices appearing in multiple designs
+print(selected_indices)
+
+```
+
+Five frequency points (62, 88, 105, 132, 177) were chosen based on the following criteria:
+
+**Frequent Minimum Values:** These points showed minimum S11 magnitudes across multiple designs, indicating resonance frequencies where the antenna performs most efficiently.
+**Coverage Across Frequency Range:** Points were selected from low (62), mid (88 and 105), and high (132 and 177) frequency ranges to capture overall performance.
+**Distinctive Behavior:** These frequencies exhibit clear minimum points in S11, helping the model focus on critical performance frequencies.
+This selection balances model efficiency with meaningful frequency representation.
+
+
+### 3.3. Regression Modeling for S11
+
+# Regression for frequency at 62
+
+
+```{r regression for frequency 62}
+
+# Define the selected frequency indices
+selected_indices <- c(62, 88, 105, 132, 177)
+
+
+# model the all selected frequencies
+freq_index <- 62  
+real_selected <- as.numeric(real_s11[[freq_index]])  # Real component
+img_selected <- as.numeric(img_s11[[freq_index]])    # Imaginary component
+
+# Tüm 11 geometrik parametre ile modelleme
+linear_model_real <- lm(real_selected ~ ., data = input_data)
+linear_model_img <- lm(img_selected ~ ., data = input_data)
+
+# print the results
+summary(linear_model_real)
+summary(linear_model_img)   
+
+```
+
+The regression model for frequency 62 shows a strong fit for the real component with an adjusted R-squared of 0.81, explaining 81% of the variance. Significant predictors include height of substrate (positive impact), width of patch (positive), radius of the probe (negative), and dielectric constant of substrate (negative). For the imaginary component, the model fit is weaker, with an adjusted R-squared of 0.26, indicating that it explains only 26% of the variance. Key predictors here are height of substrate (negative impact), length and width of patch (positive), radius of the probe (negative). Both models are statistically significant (p-value < 2.2e-16).
+
+# Regression for frequency at 88
+
+```{r regression for frequency 88}
+
+
+#frequency= 88
+freq_index <- 88  
+real_selected <- as.numeric(real_s11[[freq_index]])  
+img_selected <- as.numeric(img_s11[[freq_index]])    
+
+
+linear_model_real <- lm(real_selected ~ ., data = input_data)
+linear_model_img <- lm(img_selected ~ ., data = input_data)
+
+
+summary(linear_model_real)  
+summary(linear_model_img)  
+```
+
+The regression model for frequency 88 demonstrates a strong fit for the real component with an adjusted R-squared of 0.7787, explaining around 78% of the variance. Significant predictors include height of substrate (positive impact), radius of the probe (negative), c_probe (positive), and dielectric constant of substrate (negative). For the imaginary component, the model fit is weaker, with an adjusted R-squared of 0.3055, indicating that it explains about 30% of the variance. Key predictors here are height of substrate (negative impact), length of patch (positive), width of patch (positive), radius of the probe (negative), and c_probe (negative). Both models are statistically significant (p-value < 2.2e-16).
+
+
+# Regression for frequency at 105
+
+```{r regression for frequency 105}
+
+
+#frequency= 105
+freq_index <- 105  
+real_selected <- as.numeric(real_s11[[freq_index]])  
+img_selected <- as.numeric(img_s11[[freq_index]])    
+
+
+linear_model_real <- lm(real_selected ~ ., data = input_data)
+linear_model_img <- lm(img_selected ~ ., data = input_data)
+
+
+summary(linear_model_real)  
+summary(linear_model_img)  
+```
+The regression model for frequency 105 shows a strong fit for the real component with an adjusted R-squared of 0.7776, explaining around 78% of the variance. Significant predictors include height of substrate (positive impact), width of patch (positive), radius of the probe (negative), and probe capacitance (c_probe) (positive). For the imaginary component, the model fit is weaker, with an adjusted R-squared of 0.3308, indicating it explains about 33% of the variance. Key predictors here are height of substrate (negative impact), width of patch (positive), radius of the probe (negative), probe capacitance (c_probe) (negative), and dielectric constant of substrate (positive). Both models are statistically significant (p-value < 2.2e-16).
+
+# Regression for frequency at 132
+
+```{r regression for frequency 132}
+
+#frequency= 132
+freq_index <- 132  
+real_selected <- as.numeric(real_s11[[freq_index]])  
+img_selected <- as.numeric(img_s11[[freq_index]])    
+
+
+linear_model_real <- lm(real_selected ~ ., data = input_data)
+linear_model_img <- lm(img_selected ~ ., data = input_data)
+
+
+summary(linear_model_real)  
+summary(linear_model_img)  
+```
+The regression model for frequency 132 shows a strong fit for the real component with an adjusted R-squared of 0.7906, explaining around 79% of the variance. Significant predictors include length of patch (positive impact), width of patch (positive), height of substrate (positive), and dielectric constant of substrate (negative). For the imaginary component, the model fit is weaker, with an adjusted R-squared of 0.3001, indicating it explains about 30% of the variance. Key predictors here are height of substrate (negative impact), width of patch (positive), radius of the probe (negative), probe capacitance (c_probe) (negative), and dielectric constant of substrate (positive). Both models are statistically significant (p-value < 2.2e-16).
+
+
+
+# Regression for frequency at 177:
+
+
+```{r regression for frequency 177}
+
+#frequency= 177
+freq_index <- 177 
+real_selected <- as.numeric(real_s11[[freq_index]])  
+img_selected <- as.numeric(img_s11[[freq_index]])    
+
+
+linear_model_real <- lm(real_selected ~ ., data = input_data)
+linear_model_img <- lm(img_selected ~ ., data = input_data)
+
+
+summary(linear_model_real)  
+summary(linear_model_img)  
+```
+The regression model for frequency 177 shows a strong fit for the real component with an adjusted R-squared of 0.823, explaining around 82% of the variance. Significant predictors include width of patch (positive impact), height of substrate (positive), and radius of the probe (negative). For the imaginary component, the model fit is weaker, with an adjusted R-squared of 0.2645, indicating it explains about 26% of the variance. Key predictors here are height of substrate (negative impact), radius of the probe (negative), and probe capacitance (c_probe) (negative). Both models are statistically significant (p-value < 2.2e-16).
+
+
+
+```{r regression results combined}
+# Initialize vectors to store MSE and R-squared values for each frequency
+mse_real_values <- numeric(length(selected_indices))
+mse_img_values <- numeric(length(selected_indices))
+r_squared_real_values <- numeric(length(selected_indices))
+r_squared_img_values <- numeric(length(selected_indices))
+
+# Loop through each selected frequency index to perform regression analysis
+for (i in 1:length(selected_indices)) {
+  freq_index <- selected_indices[i]
+  
+  # Extract the selected frequency points for both real and imaginary components
+  real_selected <- as.numeric(real_s11[[freq_index]])  # Ensure it's numeric
+  img_selected <- as.numeric(img_s11[[freq_index]])    # Ensure it's numeric
+  
+  # Fit a linear regression model for the real component using all 11 geometric parameters
+  linear_model_real <- lm(real_selected ~ ., data = input_data)
+  
+  # Fit a linear regression model for the imaginary component using all 11 geometric parameters
+  linear_model_img <- lm(img_selected ~ ., data = input_data)
+
+  
+  # Calculate MSE (Mean Squared Error) for real and imaginary components
+  mse_real_values[i] <- mean((real_selected - predict(linear_model_real))^2)
+  mse_img_values[i] <- mean((img_selected - predict(linear_model_img))^2)
+  
+  # Calculate R-squared for both real and imaginary components
+  r_squared_real_values[i] <- summary(linear_model_real)$r.squared
+  r_squared_img_values[i] <- summary(linear_model_img)$r.squared
+}
+
+# Create a data frame to display MSE and R-squared values for each frequency
+results_df <- data.frame(
+  Frequency = selected_indices,
+  MSE_Real = mse_real_values,
+  MSE_Imag = mse_img_values,
+  R_squared_Real = r_squared_real_values,
+  R_squared_Imag = r_squared_img_values
+)
+
+# Display the results table
+print(results_df)
+
+
+```
+# Overall Interpretation
+
+**MSE (Mean Squared Error):** The MSE values for both Real and Imaginary components are relatively close across frequencies. Lower MSE values indicate that the model's predictions are close to the actual values. Frequencies 62 and 177 have the lowest MSE values, suggesting better prediction accuracy at these frequencies.
+
+**R-squared:** The R-squared values for the Real component are generally high, with the highest value at frequency 177 (0.828), indicating that the model explains 82% of the variance in the Real component at this frequency. For the Imaginary component, however, R-squared values are significantly lower (ranging from 0.28 to 0.35), showing that the model explains the variance in the Imaginary component less effectively.
+
+```{r visualize}
+
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Sample data (assuming the table you showed is stored in a data frame called `results_df`)
+# Uncomment the following line if your data is not yet in `results_df`
+# results_df <- data.frame(Frequency = c(62, 88, 105, 132, 177), MSE_Real = c(...), MSE_Imag = c(...), R_squared_Real = c(...), R_squared_Imag = c(...))
+
+# Plot MSE values for Real and Imaginary components across frequencies
+ggplot(results_df, aes(x = Frequency)) +
+  geom_line(aes(y = MSE_Real, color = "Real MSE"), size = 1.2) +
+  geom_point(aes(y = MSE_Real, color = "Real MSE"), size = 3) +
+  geom_line(aes(y = MSE_Imag, color = "Imaginary MSE"), linetype = "dashed", size = 1.2) +
+  geom_point(aes(y = MSE_Imag, color = "Imaginary MSE"), size = 3, shape = 21, fill = "white") +
+  labs(title = "MSE for Real and Imaginary Components across Frequencies",
+       x = "Frequency",
+       y = "Mean Squared Error (MSE)",
+       color = "Component") +
+  theme_minimal()
+
+# Plot R-squared values for Real and Imaginary components across frequencies
+ggplot(results_df, aes(x = Frequency)) +
+  geom_line(aes(y = R_squared_Real, color = "Real R-squared"), size = 1.2) +
+  geom_point(aes(y = R_squared_Real, color = "Real R-squared"), size = 3) +
+  geom_line(aes(y = R_squared_Imag, color = "Imaginary R-squared"), linetype = "dashed", size = 1.2) +
+  geom_point(aes(y = R_squared_Imag, color = "Imaginary R-squared"), size = 3, shape = 21, fill = "white") +
+  labs(title = "R-squared for Real and Imaginary Components across Frequencies",
+       x = "Frequency",
+       y = "R-squared",
+       color = "Component") +
+  theme_minimal()
+
+
+
+```
+```{r actual vs predicted plots}
+
+# Load ggplot2 for plotting
+library(ggplot2)
+
+# Assuming we have a list of frequencies and their corresponding actual and predicted data
+# Replace this with actual data frames for each frequency and component
+selected_frequencies <- c(62, 88, 105, 132, 177)
+plot_data <- data.frame()  # Empty data frame to store all data for plotting
+
+for (freq in selected_frequencies) {
+  # Assuming `real_selected` and `img_selected` contain the actual values,
+  # and `predicted_real` and `predicted_img` are the predicted values
+  # Replace this with actual values from your models
+  
+  # Example actual and predicted data
+  real_selected <- as.numeric(real_s11[[freq]])
+  img_selected <- as.numeric(img_s11[[freq]])
+  predicted_real <- predict(lm(real_selected ~ ., data = input_data))
+  predicted_img <- predict(lm(img_selected ~ ., data = input_data))
+  
+  # Create data frames for Real and Imaginary components
+  real_data <- data.frame(Frequency = freq, Component = "Real",
+                          Actual = real_selected, Predicted = predicted_real)
+  img_data <- data.frame(Frequency = freq, Component = "Imaginary",
+                         Actual = img_selected, Predicted = predicted_img)
+  
+  # Combine into one data frame for plotting
+  plot_data <- rbind(plot_data, real_data, img_data)
+}
+
+# Plot Actual vs Predicted for both Real and Imaginary components across frequencies
+ggplot(plot_data, aes(x = Actual, y = Predicted, color = as.factor(Frequency))) +
+  geom_point(alpha = 0.6) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  facet_wrap(~ Component, scales = "free") +
+  labs(title = "Actual vs Predicted for S11 Components across Selected Frequencies",
+       x = "Actual S11 Value",
+       y = "Predicted S11 Value",
+       color = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+```
+
+These plots show that the model provides more accurate predictions for the Real component, while the predictions for the Imaginary component tend to have greater variability and deviation. This suggests that the model has limited explanatory power for the Imaginary component, possibly indicating a need for more complex modeling techniques or additional features to improve prediction accuracy in that component.
+
+
+## Answers to Research Questions
+
+#### 1. Can we simplify the regression task by focusing on predicting S11 at a few key frequency points?
+Yes, by selecting a subset of key frequencies (62, 88, 105, 132, and 177), we reduce the complexity of the regression task while still capturing critical aspects of S11 behavior. These frequencies were chosen because they represent resonance points or points where S11 exhibits significant variation. This approach not only reduces computational load but also allows us to focus on the most informative frequencies for understanding the relationship between design parameters and S11 behavior.
+
+#### 2. How effective are linear regression models in predicting the real and imaginary components of S11 at these selected frequency points, based on the geometric parameters of the antenna design?
+The linear regression models show effective prediction capability for the Real component across the selected frequencies, with adjusted R-squared values ranging from 0.78 to 0.83. This indicates a strong fit, suggesting that the selected geometric parameters are significant predictors for the Real component of S11 at these frequencies. However, the models perform less effectively for the Imaginary component, where adjusted R-squared values are considerably lower (0.26 to 0.35). This implies that the Imaginary component is more complex and may require additional parameters or more sophisticated models to improve prediction accuracy.
+
+#### 3. What patterns emerge when linear regression is applied to individual frequency points, and do these patterns suggest any broader trends in the design space?
+
+The analysis reveals that the Real component is consistently well-modeled by the linear regression approach across all frequencies, suggesting a strong linear relationship between the geometric parameters and the Real component of S11. In contrast, the Imaginary component shows lower predictive accuracy, indicating that its relationship with the design parameters may be non-linear or influenced by additional factors not captured in the current model. This discrepancy suggests that while the current geometric parameters are sufficient to model the Real component, the Imaginary component may benefit from a more complex model or additional design features to capture broader trends in the design space effectively.
+
+
+### 3.4. Model Performance and Interpretability (Research Questions Answers)
+
+
+#### 1) How do PCA and regression models compare in terms of their ability to simplify and predict the antenna's performance?
+
+PCA was applied to reduce the dimensionality of the design parameter space, successfully identifying principal components that account for most of the variance in the dataset. This analysis helped reveal which parameters most significantly impact the S11 behavior of the antenna, particularly in terms of its real component. Notably, parameters such as the height of the substrate and the radius of the probe were identified as critical factors. The dimensionality reduction provided by PCA not only made the dataset more manageable but also offered insights into the relationship between these geometric features and the antenna's performance.
+
+When applying regression models to predict S11 at selected frequency points, the models demonstrated strong predictive accuracy for the real component of S11, with adjusted R-squared values ranging from 0.78 to 0.83. However, the models performed less effectively in predicting the imaginary component, with lower R-squared values (approximately 0.26 to 0.35). This discrepancy suggests that while PCA facilitates simplification and highlights key design parameters, the linear regression models lack the complexity needed to capture the non-linear relationships present in the imaginary component's behavior. In summary, PCA aids in simplifying the data, while regression models effectively predict the real component but struggle with the imaginary component due to its more complex and potentially non-linear nature.
+
+
+#### 2) What are the potential limitations of these models, and how could they be improved to more accurately represent complex, nonlinear electromagnetic behavior?
+
+Despite their usefulness, both PCA and linear regression models have limitations in capturing the full scope of the antenna's electromagnetic behavior:
+
+**PCA Limitations:** Although PCA successfully reduces dimensionality and identifies influential features, its linear nature may fail to capture non-linear interactions between design parameters. This limitation is particularly evident in the imaginary component of S11, where complex, non-linear relationships are likely present.
+
+**Regression Model Limitations:** The linear regression models perform well in predicting the real component but exhibit limited predictive power for the imaginary component. This suggests that the relationship between design parameters and the imaginary component may be non-linear, which the linear regression models cannot accurately capture.
+
+To address these limitations, several improvements could be implemented:
+
+**Non-linear Modeling Techniques:** Non-linear modeling techniques, such as kernel-based methods (e.g., Kernel PCA) or machine learning models like decision trees and neural networks, could provide better representation of the complex electromagnetic behavior, particularly for the imaginary component of S11.
+
+**Feature Engineering:** Introducing derived or interaction features could enhance the model's ability to explain variance in the imaginary component by capturing the interactions between different design parameters.
+
+**Advanced Regression Models:** Exploring more flexible regression approaches, such as polynomial regression or ridge regression, may improve the model's ability to capture complex relationships within the data, potentially enhancing prediction accuracy for both the real and imaginary components.
+
+## 5. Conclusions and Real-World Implications
+
+This analysis highlights critical insights into antenna design for high-frequency systems:
+
+**Key Parameters for S11 Performance:** PCA identified key parameters, such as the height of the substrate and probe radius, as major influencers of S11 behavior. Prioritizing these parameters in design can streamline optimization, reducing costs and development time.
+
+**Predictive Modeling:** Linear regression models effectively predicted the real component of S11 but struggled with the imaginary component. This suggests that while simpler models can capture certain design aspects, more complex methods are needed for complete accuracy.
+
+**Advanced Techniques for Non-linear Behavior:** The limitations of linear regression imply that future models could benefit from non-linear techniques, like neural networks, to capture complex interactions in S11’s imaginary component.
+
+**Impact on 5G Antenna Design:** These insights can improve 5G antenna design, enabling more efficient, optimized antennas that meet high-performance standards for next-generation communication networks.
+
+## Challenges and Solutions
+
+Throughout the analysis, we encountered several challenges:
+
+**High Dimensionality:** With 201 frequency points, modeling the entire dataset would have been computationally expensive. To address this, selecting key frequencies based on resonance points, allowing us to focus on meaningful patterns while reducing computation time.
+
+**Low Predictability of Imaginary Component:** The Imaginary component’s low R-squared values indicated that it might not be fully captured by linear regression. Although this limitation was noted, we opted to keep the linear model for simplicity and highlight the need for more advanced modeling techniques as a future improvement.
+
+**Model Interpretation:** Interpreting PCA loadings and regression coefficients required careful analysis to ensure meaningful insights. We addressed this by focusing on components with the highest explained variance and summarizing key predictors, such as substrate height and probe radius, that significantly impacted S11 behavior.
