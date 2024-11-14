@@ -4,8 +4,8 @@
 
 ### Homework 1: Antenna Design Analysis
 
-[Code File] (files/IE582HW1.html)
-[Report] (files/IE582HW1_code.R)
+* [Code File] (https://bu-ie-582.github.io/fall-24-burcucestan-boun/files/IE582HW1_code.R)
+* [Report] (https://bu-ie-582.github.io/fall-24-burcucestan-boun/files/IE582HW1.html)
 
 
 
