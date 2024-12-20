@@ -1,0 +1,1253 @@
+---
+title: "IE582 Homework 2"
+author: "Burcu Çeştan - 2023702012"
+date: "2024-12-15"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Introduction
+
+This report analyzes match data, calculates implied probabilities, and generates insights by predicting football match outcomes using decision tree models and identifying market inefficiencies through comparisons between predicted probabilities and bookmaker-implied probabilities.
+
+### Preprocessing Step
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+# Load necessary libraries
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+
+```
+
+```{r load}
+# Load the data set 
+data <- read.csv("/Users/burcucestan/Desktop/HW2/match_data", header=TRUE)
+
+# Display the first few rows of data
+#cat("First few rows of the data:\n")
+#head(data)
+
+#cat("\nStructure of the data:\n")
+#str(data)
+```
+
+```{r preprocessing}
+
+# Filtering the data
+# Remove rows where "suspended" or "stopped" is TRUE
+filtered_data <- data[data$suspended == "False" & data$stopped == "False", ]
+
+# Retain 'result' and 'halftime' columns for further steps
+results <- filtered_data$result
+halftime <- filtered_data$halftime
+
+# Calculate the percentage of missing values for each column
+missing_percentage <- colSums(is.na(filtered_data)) / nrow(filtered_data) * 100
+
+# Remove columns with more than 70% missing data
+columns_to_remove <- names(missing_percentage[missing_percentage > 70])
+filtered_data <- filtered_data[, !(names(filtered_data) %in% columns_to_remove)]
+
+# Fill missing values in columns with less than 10% missing data
+columns_to_impute <- names(missing_percentage[missing_percentage <= 10])
+for (col in columns_to_impute) {
+  if (is.numeric(filtered_data[[col]])) {
+    filtered_data[[col]][is.na(filtered_data[[col]])] <- mean(filtered_data[[col]], na.rm = TRUE)
+  }
+}
+
+# Re-add 'result' and 'halftime' columns to filtered data
+filtered_data <- filtered_data %>% 
+  mutate(result = results, halftime = halftime)
+
+# Check the dimensions of the filtered dataset
+cat("\nDimensions of the filtered dataset:\n")
+dim(filtered_data)
+
+
+```
+
+
+### Data Filtering and Missing Data Handling
+
+In the preprocessing step, we focused on both filtering and handling missing data to prepare the dataset for analysis.
+
+#### Filtering:
+
+Rows where the suspended or stopped columns were TRUE were removed as they indicate unreliable or incomplete data points. This reduced the data set to relevant and actionable records.
+
+#### Missing Data Analysis:
+
+We identified columns with missing values and categorized them based on the proportion of missing data:
+Columns with more than 70% missing values (e.g., "Free Kicks - home") were removed due to their limited contribution to the analysis.
+For columns with less than 10% missing values, the gaps were filled using the mean value of the respective column to retain their predictive power.
+
+The variables Free.Kicks.away, Free.Kicks.home, Injuries.away, and Injuries.home were removed because they contained over 70% missing values. Such high levels of missing data reduce their reliability and usefulness in the analysis, so they were excluded to maintain data quality.
+
+#### Verification:
+
+After filtering and imputation, we confirmed that the dataset was clean and ready for further statistical analysis.
+By addressing both filtering and missing data issues, we ensured the data set's integrity and reliability, enabling accurate analysis in subsequent steps.
+
+## TASK 1
+
+```{r implied probabilities}
+
+# Create a new data frame 'odds_data' to isolate odds columns and other relevant columns
+odds_data <- filtered_data %>% select(fixture_id, X1, X2, X, result, halftime, minute)
+
+# Convert odds columns (X1, X2, X) to numeric data type
+odds_data <- odds_data %>% mutate(across(c(X1, X2, X), as.numeric))
+
+# Calculate implied probabilities based on the odds columns
+implied_probs <- odds_data %>% 
+  mutate(
+    `Pr{Home Win}` = 1 / X1,    # Implied probability for Home Win
+    `Pr{Away Win}` = 1 / X2,    # Implied probability for Away Win
+    `Pr{Tie}` = 1 / X           # Implied probability for Tie
+  ) %>% 
+  select(`Pr{Home Win}`, `Pr{Away Win}`, `Pr{Tie}`, result, halftime, fixture_id, minute)  # Select relevant columns for the output
+
+# Display the first few rows of the resulting implied probabilities table
+cat("Implied probabilities with result and halftime:\n")
+head(implied_probs)
+
+
+```
+
+
+```{r normalization}
+
+#Calculate the normalization factor
+implied_probs <- implied_probs %>%
+  mutate(normalization_factor = `Pr{Home Win}` + `Pr{Away Win}` + `Pr{Tie}`)
+
+#Normalize probabilities
+normalized_probs <- implied_probs %>%
+  mutate(
+    `Pr{Home Win}` = `Pr{Home Win}` / normalization_factor,  # Normalize Home Win probability
+    `Pr{Away Win}` = `Pr{Away Win}` / normalization_factor,  # Normalize Away Win probability
+    `Pr{Tie}` = `Pr{Tie}` / normalization_factor             # Normalize Tie probability
+  ) %>%
+  select(-normalization_factor)  # Remove the normalization factor column
+
+# Display the first few rows of the normalized probabilities table
+cat("\nNormalized probabilities:\n")
+head(normalized_probs)
+
+
+
+```
+
+Construct the plots for each half first with not normalized probabilities:
+
+```{r nonormalized first half}
+
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+implied_probs <- implied_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+implied_probs <- implied_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the first half
+first_half_data <- implied_probs %>%
+  filter(halftime == "1st-half")
+
+# Calculate the total number of games in each bin
+bin_totals <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties <- first_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities <- bin_totals %>%
+  left_join(bin_ties, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data <- tie_probabilities %>%
+  left_join(bookmaker_draws, by = "Bin")
+
+# Visualize the results
+library(ggplot2)
+
+ggplot(visualization_data, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "blue",
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin),
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    size = 3,    # Marker size
+    shape = 17   # Triangle marker for bookmark style
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (First Half, Implied Probabilities)",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+
+```
+   
+  The plot for the first half highlights a strong correlation between the evenly distributed probabilities of home and away wins (bins closer to 0) and the likelihood of a tie. In these central bins, both the estimated tie rates (blue bars) and bookmaker tie rates (red triangular markers) reach their highest values, indicating a higher chance of matches ending in draws when neither team has a distinct advantage. However, some deviations are noticeable in bins like (-0.6, -0.4) and (0.4, 0.6), where the estimated tie rates exceed the bookmaker predictions. This suggests a potential underestimation by bookmakers for these scenarios. The outer bins, such as [-1, -0.8] and (0.8, 1], show the lowest probabilities for ties, which aligns with the expectation that strong disparities between home and away win probabilities reduce the likelihood of a draw. The use of red triangular markers effectively emphasizes the bookmaker predictions, making the deviations in certain bins more visually apparent.
+
+```{r nonormalized second half}
+
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+implied_probs <- implied_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+implied_probs <- implied_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the second half
+second_half_data <- implied_probs %>%
+  filter(halftime == "2nd-half")
+
+# Calculate the total number of games in each bin
+bin_totals_second_half <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties_second_half <- second_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities_second_half <- bin_totals_second_half %>%
+  left_join(bin_ties_second_half, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws_second_half <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data_second_half <- tie_probabilities_second_half %>%
+  left_join(bookmaker_draws_second_half, by = "Bin")
+
+# Visualize the results with red triangular markers
+library(ggplot2)
+
+ggplot(visualization_data_second_half, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "blue",  # Use blue for the bars
+    color = "black"
+  ) +
+  geom_point(
+    aes(x = as.numeric(Bin), y = BookmakerTieRate),
+    color = "red",
+    shape = 17,  # Use a triangular shape
+    size = 3    
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (Second Half, Implied Probabilities)",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+
+```
+   
+   For the second half, the tie probabilities exhibit a pronounced pattern, with the central bins (e.g., (-0.2, 0) and (0, 0.2)) achieving the highest tie rates. In these bins, the estimated tie rates (blue bars) often exceed the bookmaker tie rates (red triangular markers), highlighting potential underestimations by bookmakers for balanced matches.
+
+The outer bins, such as [-1, -0.8] and (0.8, 1], retain the lowest tie probabilities, aligning with the expected outcome that games with a strong home or away advantage are less likely to end in a draw. Notably, in the second half, tie probabilities appear slightly elevated overall, suggesting that late-game factors, such as increased defensive tactics or player fatigue, might influence match outcomes. This dynamic underscores the potential for the second half to shift probabilities in favor of draws in balanced scenarios.
+
+Then do the same with normalized probabilities:
+
+```{r normalized first half}
+
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+normalized_probs <- normalized_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+normalized_probs <- normalized_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the first half
+first_half_data <- normalized_probs %>%
+  filter(halftime == "1st-half")
+
+# Calculate the total number of games in each bin
+bin_totals <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties <- first_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities <- bin_totals %>%
+  left_join(bin_ties, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data <- tie_probabilities %>%
+  left_join(bookmaker_draws, by = "Bin")
+
+# Visualize the results
+library(ggplot2)
+
+ggplot(visualization_data, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "purple",
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin),
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    size = 3,
+    shape = 17  # Triangle marker
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (First Half, Normalized Probabilities)",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+
+```
+
+  There is a clear trend that matches with evenly distributed probabilities between home and away wins (bins closer to 0) have a higher likelihood of resulting in a tie, as indicated by both the estimated tie rates (purple bars) and the bookmaker tie rates (red triangular markers). However, deviations can be observed, particularly in bins such as (-0.6, -0.4) and (0.4, 0.6), where the estimated tie rates are notably higher than the bookmaker predictions.
+
+This discrepancy suggests potential underestimations by bookmakers in these specific bins. In contrast, the outer bins (e.g., [-1, -0.8] and (0.8, 1]) exhibit the lowest tie rates, which aligns with the intuition that matches with strong probability disparities are less likely to end in ties. These patterns highlight areas where bookmaker predictions might benefit from adjustments to better capture the dynamics of evenly matched games.
+
+
+```{r normalized second half}
+
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+normalized_probs <- normalized_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+normalized_probs <- normalized_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the second half
+second_half_data <- normalized_probs %>%
+  filter(halftime == "2nd-half")
+
+# Calculate the total number of games in each bin
+bin_totals_second_half <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties_second_half <- second_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities_second_half <- bin_totals_second_half %>%
+  left_join(bin_ties_second_half, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws_second_half <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data_second_half <- tie_probabilities_second_half %>%
+  left_join(bookmaker_draws_second_half, by = "Bin")
+
+# Visualize the results
+library(ggplot2)
+
+ggplot(visualization_data_second_half, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "purple",  # Use purple for the bars
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin), 
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    shape = 17,  # Shape 17 represents a triangle in ggplot2
+    size = 3     # Adjust size for visibility
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (Second Half, Normalized Probabilities)",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+
+  In the second half, matches with balanced probabilities between home and away wins (bins closer to 0) continue to exhibit a higher likelihood of resulting in a tie. This is evident from the estimated tie rates (purple bars) and the bookmaker tie rates (red triangular markers). Notable deviations are observed in bins such as (-0.4, -0.2) and (0.2, 0.4), where the estimated tie rates are significantly higher than bookmaker predictions, indicating potential underestimation of ties by bookmakers in these scenarios.
+
+The outer bins, such as [-1, -0.8] and (0.8, 1], maintain their trend of lower tie probabilities, consistent with the intuition that matches with strong home or away advantages are less likely to end in ties.
+
+Overall, the second half shows slightly higher estimated tie probabilities compared to the first half, potentially reflecting cautious strategies, defensive gameplay, or fatigue influencing outcomes. These dynamics highlight the importance of match context and team adjustments in shaping probabilities during the second half.
+
+
+## TASK 2
+
+##### Noise Data Cases:
+
+##### 1. Goals Scored in the First 10 Minutes
+- **Why Noise?**: The first 10 minutes of a match are often a period where teams are settling into the game. Goals scored during this time can disrupt the natural flow of the match and disproportionately affect the outcome.
+
+---
+
+##### 2. Goals Scored After the 85th Minute
+- **Why Noise?**: Goals scored in the final minutes of a match are often the result of defensive errors, aggressive attacks, or time-wasting strategies. These do not reflect the overall dynamics of the game.
+
+---
+
+##### 3. Substitutions in the First 30 Minutes
+- **Why Noise?**: Substitutions made in the first 30 minutes are typically due to injuries or tactical adjustments, which can significantly alter the course of the match and skew the implied probabilities.
+
+---
+
+##### 4. Penalty Awarded in the First 15 Minutes
+- **Why Noise?**: A penalty in the first 15 minutes can significantly alter the match outcome by giving one team an early lead, which may not represent the actual competitiveness of the teams.
+
+---
+
+##### 5. Multiple Yellow Cards in the First 20 Minutes
+- **Why Noise?**: Multiple yellow cards in the first 20 minutes often indicate aggressive play or referee bias, which can lead to early tactical shifts and disrupt the natural flow of the game.
+
+
+
+```{r task2}
+
+# Add a new column for the "actual minute" of the match
+filtered_data <- filtered_data %>%
+  mutate(
+    actual_minute = ifelse(halftime == "1st-half", minute, minute + 45)
+  )
+
+# Case 1: Goals in the first 10 minutes
+filtered_data <- filtered_data %>%
+  mutate(
+    Goal_in_first_10_mins = ifelse(
+      actual_minute <= 10 & (`Goals...home` + `Goals...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 2: Goals after the 85th minute
+filtered_data <- filtered_data %>%
+  mutate(
+    Goal_after_85_mins = ifelse(
+      actual_minute > 85 & (`Goals...home` + `Goals...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 3: Substitutions in the first 30 minutes
+filtered_data <- filtered_data %>%
+  mutate(
+    Substitutions_in_first_30_mins = ifelse(
+      halftime == "1st-half" & actual_minute <= 30 &
+      (`Substitutions...home` + `Substitutions...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 4: Penalty Awarded in the First 15 Minutes
+filtered_data <- filtered_data %>%
+  mutate(
+    Penalty_in_first_15_mins = ifelse(
+      halftime == "1st-half" & actual_minute <= 15 &
+      (`Penalties...home` + `Penalties...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 5: Multiple Yellow Cards in the First 20 Minutes
+filtered_data <- filtered_data %>%
+  mutate(
+    Multiple_yellow_cards_first_20_mins = ifelse(
+      halftime == "1st-half" & actual_minute <= 20 &
+      (`Yellowcards...home` + `Yellowcards...away`) > 1,
+      TRUE, FALSE
+    )
+  )
+
+# Calculate and print the number of matches fitting each case
+cat("Number of matches with a goal before 10 minutes: ", sum(filtered_data$Goal_in_first_10_mins), "\n")
+cat("Number of matches with a goal after 85 minutes: ", sum(filtered_data$Goal_after_85_mins), "\n")
+cat("Number of matches with substitutions in the first 30 minutes: ", 
+    sum(filtered_data$Substitutions_in_first_30_mins), "\n")
+cat("Number of matches with a penalty in the first 15 minutes: ", 
+    sum(filtered_data$Penalty_in_first_15_mins), "\n")
+cat("Number of matches with multiple yellow cards in the first 20 minutes: ", 
+    sum(filtered_data$Multiple_yellow_cards_first_20_mins), "\n")
+
+# Create a new dataset for cleaned data after removing noisy rows
+cleaned_data <- filtered_data %>%
+  filter(
+    !(Goal_in_first_10_mins | 
+      Goal_after_85_mins | 
+      Substitutions_in_first_30_mins | 
+      Penalty_in_first_15_mins | 
+      Multiple_yellow_cards_first_20_mins)
+  )
+
+# Calculate and print the number of rows removed
+original_row_count <- nrow(filtered_data)
+removed_row_count <- original_row_count - nrow(cleaned_data)
+
+cat("Number of rows removed as noisy data: ", removed_row_count, "\n")
+cat("Number of rows in the cleaned dataset: ", nrow(cleaned_data), "\n")
+
+
+
+```
+
+After removing the identified noisy data, we proceed to perform the third and fourth subtasks of Task 1 using the cleaned data set.
+
+```{r contd}
+ 
+# Create a new data frame 'cleaned_odds_data' to isolate odds columns and other relevant columns
+cleaned_odds_data <- cleaned_data %>% select(X1, X2, X, result, halftime)
+
+# Convert odds columns (X1, X2, X) to numeric data type
+cleaned_odds_data <- cleaned_odds_data %>% mutate(across(c(X1, X2, X), as.numeric))
+
+# Calculate implied probabilities based on the odds columns
+cleaned_implied_probs <- cleaned_odds_data %>% 
+  mutate(
+    `Pr{Home Win}` = 1 / X1,    # Implied probability for Home Win
+    `Pr{Away Win}` = 1 / X2,    # Implied probability for Away Win
+    `Pr{Tie}` = 1 / X           # Implied probability for Tie
+  ) %>% 
+  select(`Pr{Home Win}`, `Pr{Away Win}`, `Pr{Tie}`, result, halftime)  # Select relevant columns for the output
+
+# Display the first few rows of the resulting implied probabilities table
+cat("Implied probabilities with result and halftime:\n")
+head(cleaned_implied_probs)
+
+# Calculate the normalization factor
+cleaned_implied_probs <- cleaned_implied_probs %>%
+  mutate(normalization_factor = `Pr{Home Win}` + `Pr{Away Win}` + `Pr{Tie}`)
+
+# Normalize probabilities
+cleaned_normalized_probs <- cleaned_implied_probs %>%
+  mutate(
+    `Pr{Home Win}` = `Pr{Home Win}` / normalization_factor,  # Normalize Home Win probability
+    `Pr{Away Win}` = `Pr{Away Win}` / normalization_factor,  # Normalize Away Win probability
+    `Pr{Tie}` = `Pr{Tie}` / normalization_factor             # Normalize Tie probability
+  ) %>%
+  select(-normalization_factor)  # Remove the normalization factor column
+
+# Display the first few rows of the normalized probabilities table
+cat("\nNormalized probabilities:\n")
+head(cleaned_normalized_probs)
+
+# Validate that all rows sum to 1
+# Calculate row sums for normalized probabilities
+row_sums <- rowSums(cleaned_normalized_probs %>% select(`Pr{Home Win}`, `Pr{Away Win}`, `Pr{Tie}`))
+
+# Check if all rows sum to 1
+cat("\nDo all rows sum to 1? ", all.equal(row_sums, rep(1, nrow(cleaned_normalized_probs))), "\n")
+
+
+
+```
+```{r cleaned data first half with nonnormalized probs}
+
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+cleaned_implied_probs <- cleaned_implied_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+cleaned_implied_probs <- cleaned_implied_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the first half
+first_half_data <- cleaned_implied_probs %>%
+  filter(halftime == "1st-half")
+
+# Calculate the total number of games in each bin
+bin_totals <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties <- first_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities <- bin_totals %>%
+  left_join(bin_ties, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data <- tie_probabilities %>%
+  left_join(bookmaker_draws, by = "Bin")
+
+# Visualize the results
+library(ggplot2)
+
+ggplot(visualization_data, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "blue",
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin),
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    size = 3,    # Marker size
+    shape = 17   # Triangle marker for bookmark style
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (First Half, Implied Probabilities) - After Noise Removal",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+```
+
+   After removing noisy data, the overall trends in the first half remain consistent, with central bins (e.g., [-0.2, 0.2]) showing strong alignment between estimated tie rates (blue bars) and bookmaker tie rates (red markers). Outer bins, such as [-1, -0.8] and [0.8, 1], continue to exhibit low tie probabilities, indicating that noise removal had minimal impact on extreme scenarios. However, some improvements are observed in bins like [0.4, 0.6], where the alignment between estimated and bookmaker probabilities has become more precise, suggesting a refinement in predictions due to noise filtering.
+
+```{r cleaned data second half with nonnormalized probs}
+
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+cleaned_implied_probs <- cleaned_implied_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+cleaned_implied_probs <- cleaned_implied_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the first half
+second_half_data <- cleaned_implied_probs %>%
+  filter(halftime == "2nd-half")
+
+# Calculate the total number of games in each bin
+bin_totals <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties <- second_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities <- bin_totals %>%
+  left_join(bin_ties, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data <- tie_probabilities %>%
+  left_join(bookmaker_draws, by = "Bin")
+
+# Visualize the results
+library(ggplot2)
+
+ggplot(visualization_data, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "blue",
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin),
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    size = 3,    # Marker size
+    shape = 17   # Triangle marker for bookmark style
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (Second Half, Implied Probabilities)-After Noise Removal",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+```
+
+  After comparing the second half graphs for implied probabilities before and after noise removal, it is evident that the removal of noisy data slightly adjusts the estimated tie rates across bins. The central bins, such as (-0.2, 0.2), maintain their peak tie probabilities, demonstrating consistency with the bookmaker predictions. However, the outer bins, such as [-1, -0.8] and (0.8, 1], show a marginal increase in estimated tie probabilities after noise removal, potentially reflecting a more accurate alignment with match outcomes. Overall, the adjustments remain subtle, suggesting that the noise removal process primarily refines the edges of the analysis rather than dramatically altering the overall trends.
+
+```{r cleaned data first half with normalized probs}
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+cleaned_normalized_probs <- cleaned_normalized_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+cleaned_normalized_probs <- cleaned_normalized_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+# Filter data for the first half
+first_half_data <- cleaned_normalized_probs %>%
+  filter(halftime == "1st-half")
+
+# Calculate the total number of games in each bin
+bin_totals <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties <- first_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities <- bin_totals %>%
+  left_join(bin_ties, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws <- first_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data <- tie_probabilities %>%
+  left_join(bookmaker_draws, by = "Bin")
+
+# Visualize the results for the first half
+library(ggplot2)
+
+ggplot(visualization_data, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "purple",
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin),
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    size = 3,    # Marker size
+    shape = 17   # Triangle marker for bookmark style
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (First Half, Cleaned and Normalized Probabilities)",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+
+
+```
+  
+  Before cleaning, the first-half normalized probabilities graph shows some misalignment, particularly in the outer bins, where estimated tie rates deviate from bookmaker predictions. After cleaning, the central bins align better, with red markers closely matching the purple bars. However, disparities persist in the outer bins, highlighting potential areas for further refinement.
+
+
+
+
+
+
+
+
+```{r cleaned data second half with normalized probs}
+# Define the bins with an interval of 0.2
+bins <- seq(-1, 1, by = 0.2)  # Define bins from -1 to 1 with a step of 0.2
+
+# Calculate the difference between Home Win and Away Win probabilities
+cleaned_normalized_probs <- cleaned_normalized_probs %>%
+  mutate(Difference = `Pr{Home Win}` - `Pr{Away Win}`)
+
+# Assign each row to a bin based on the calculated difference
+cleaned_normalized_probs <- cleaned_normalized_probs %>%
+  mutate(Bin = cut(Difference, breaks = bins, include.lowest = TRUE))
+
+
+second_half_data <- cleaned_normalized_probs %>%
+  filter(halftime == "2nd-half")
+
+# Calculate the total number of games in each bin
+bin_totals <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(TotalGames = n())
+
+# Calculate the number of ties (draws) in each bin
+bin_ties <- second_half_data %>%
+  filter(result == "X") %>%
+  group_by(Bin) %>%
+  summarize(TieGames = n())
+
+# Calculate the estimated tie probabilities for each bin
+tie_probabilities <- bin_totals %>%
+  left_join(bin_ties, by = "Bin") %>%
+  mutate(
+    TieGames = ifelse(is.na(TieGames), 0, TieGames),  # Replace NA values with 0
+    EstimatedTieRate = TieGames / TotalGames
+  )
+
+# Calculate the average bookmaker tie probabilities for each bin
+bookmaker_draws <- second_half_data %>%
+  group_by(Bin) %>%
+  summarize(BookmakerTieRate = mean(`Pr{Tie}`, na.rm = TRUE))
+
+# Combine estimated and bookmaker probabilities into one dataset
+visualization_data <- tie_probabilities %>%
+  left_join(bookmaker_draws, by = "Bin")
+
+
+library(ggplot2)
+
+ggplot(visualization_data, aes(x = Bin)) +
+  geom_bar(
+    aes(y = EstimatedTieRate),
+    stat = "identity",
+    width = 0.2,
+    fill = "purple",
+    color = "black"
+  ) +
+  geom_point(
+    aes(
+      x = as.numeric(Bin),
+      y = BookmakerTieRate
+    ),
+    color = "red",
+    size = 3,    # Marker size
+    shape = 17   # Triangle marker for bookmark style
+  ) +
+  labs(
+    title = "Estimated Tie Rates vs. Bookmaker Tie Rates (Second Half, Cleaned and Normalized Probabilities)",
+    x = "Home Win - Away Win (Binned)",
+    y = "Probability"
+  ) +
+  theme_minimal()
+
+
+```
+  
+  After reviewing the "Estimated Tie Rates vs. Bookmaker Tie Rates" for the second half with normalized probabilities, both before and after removing noisy data, several key observations emerge. Before removing noisy data, there were noticeable deviations in the alignment between estimated and bookmaker tie rates, particularly in balanced bins such as (-0.4, -0.2) and (0.2, 0.4). After removing noisy data, these deviations were reduced, and the alignment between estimated tie rates and bookmaker predictions improved slightly across the central bins. However, the overall trend, where ties are more frequent in balanced matches (bins closer to 0) and less frequent in imbalanced matches (outer bins), remained consistent. This indicates that the removal of noisy data has refined the analysis but did not drastically alter the broader patterns observed.
+
+## TASK 3
+
+In this step, the dataset was prepared for the decision tree model by creating a numeric target column to encode match outcomes (1 for home win, 2 for away win, 0 for draw). Irrelevant columns, such as penalty and assist stats (already captured in goals), bookmaker odds, and result columns, were removed to simplify the data and avoid redundancy. The cleaned dataset, prepared_data, is now streamlined and ready for further feature engineering.
+
+```{r Task 3}
+
+# Add the target column to the cleaned dataset
+cleaned_data$target <- ifelse(cleaned_data$result == "1", 1,  # Home team wins
+                       ifelse(cleaned_data$result == "2", 2,  # Away team wins
+                         0))                                  # Tie
+
+# Remove irrelevant columns from the cleaned dataset
+columns_to_remove <- c("Penalties...home", "Penalties...away", "Assists...home", "Assists...away",
+                      "current_time", "half_start_datetime", "match_start_datetime",
+                       "latest_bookmaker_update", "suspended", "stopped", "name", "second", "ticking",
+                       "result", "final_score", "X1", "X2", "X")
+
+# Update the cleaned dataset by removing the specified columns
+prepared_data <- cleaned_data[, !(names(cleaned_data) %in% columns_to_remove)]
+
+prepared_data$halftime <- ifelse(prepared_data$halftime == "1st-half", 1, 
+                                 ifelse(prepared_data$halftime == "2nd-half", 2, NA))
+
+# Display the first few rows of the updated dataset
+#head(prepared_data)
+
+# Convert the target column to factor with labels
+prepared_data$target <- factor(prepared_data$target,
+                               levels = c(0, 1, 2),
+                               labels = c("Tie", "Home Win", "Away Win"))
+
+# Verify the conversion
+print(table(prepared_data$target))
+
+
+```
+
+Here, several additional features were created and existing ones were transformed to better suit the decision tree model. These changes aim to enhance the interpretability and predictive power of the model:
+
+
+```{r prepare the data contd}
+
+# Add "Combined_Goals" column (sum of home and away goals)
+prepared_data$Combined_Goals <- prepared_data$Goals...home + prepared_data$Goals...away
+
+# Add "Net_Goal_Difference" column (net difference between home and away goals)
+prepared_data$Net_Goal_Difference <- prepared_data$Goals...home - prepared_data$Goals...away
+
+# Add "Aggressive_Attack_Balance" column (difference between home and away dangerous attacks)
+prepared_data$Aggressive_Attack_Balance <- prepared_data$Dangerous.Attacks...home - prepared_data$Dangerous.Attacks...away
+
+# Add "Possession_Imbalance" column (difference between home and away ball possession percentages)
+prepared_data$Possession_Imbalance <- prepared_data$Ball.Possession.....home - prepared_data$Ball.Possession.....away
+
+
+# Add "Shot_Effort_Difference" column (difference between home and away goal attempts)
+prepared_data$Shot_Effort_Difference <- prepared_data$Goal.Attempts...home - prepared_data$Goal.Attempts...away
+
+# Add "Match_Minute_Tracker" column (cumulative match minute tracker)
+prepared_data$Match_Minute_Tracker <- with(prepared_data, ifelse(halftime == "1st-half", minute, minute + 45))
+
+# Optional Enhancements: Add new derived features for deeper analysis
+# Add "Goal_Ratio" column (ratio of home goals to away goals, avoiding division by zero)
+prepared_data$Goal_Ratio <- ifelse(prepared_data$Goals...away == 0, 
+                                   prepared_data$Goals...home, 
+                                   prepared_data$Goals...home / prepared_data$Goals...away)
+
+# Add "Dangerous_Attacks_Ratio" column (ratio of home to away dangerous attacks)
+prepared_data$Dangerous_Attacks_Ratio <- ifelse(prepared_data$Dangerous.Attacks...away == 0, 
+                                                prepared_data$Dangerous.Attacks...home, 
+                                                prepared_data$Dangerous.Attacks...home / prepared_data$Dangerous.Attacks...away)
+
+# Add "Possession_Dominance_Flag" column (flag indicating significant possession advantage for one team)
+prepared_data$Possession_Dominance_Flag <- ifelse(abs(prepared_data$Possession_Imbalance) > 20, 1, 0)
+
+
+# Display the first few rows of the modified dataset
+#head(prepared_data)
+
+```
+
+```{r fit dt}
+# Display column names to ensure the dataset includes necessary features
+#print(names(prepared_data))
+
+# Show the first few rows to check data consistency
+#print(head(prepared_data))
+
+#Remove any rows with missing target values
+prepared_data <- prepared_data[!is.na(prepared_data$target), ]
+
+```
+
+```{r fit dt contd}
+# Load necessary libraries
+library(rpart)
+library(rpart.plot)
+
+# Define the target variable and features
+features <- prepared_data[, !(names(prepared_data) %in% c("target"))]
+target <- prepared_data$target
+
+# Combine into a single dataframe
+model_data <- prepared_data[, c(names(features), "target")]
+
+# Train-test split (70-30)
+set.seed(123)  # For reproducibility
+train_indices <- sample(1:nrow(model_data), 0.7 * nrow(model_data))
+train_data <- model_data[train_indices, ]
+test_data <- model_data[-train_indices, ]
+
+# Train a decision tree
+decision_tree <- rpart(target ~ ., 
+                       data = train_data, 
+                       method = "class", 
+                       control = rpart.control(maxdepth = 5))
+
+# Visualize the decision tree
+rpart.plot(decision_tree, main = "Decision Tree for Match Outcome")
+```
+
+The decision tree highlights the match state (current_state) as the most influential factor in predicting match outcomes. If the match is in the first half (current_state = 1), the probability of a Home Win is extremely high (70%), leading the model to stop further splitting. However, when the match state is a tie (current_state = X), additional conditions arise. If the Away team's passes exceed 258, the match leans towards a Tie with a 52% probability. When the passes are lower and home possession exceeds 50%, the likelihood of a Home Win increases. On the other hand, when the total shots of the away team are very low (Shots.Total.away < 1), the probability of a Home Win decreases, and Away Wins become more probable.
+
+In cases classified under X, Away Wins dominate, reaching a probability of 68%. This analysis highlights the importance of match state, passing accuracy, and possession control in determining match outcomes. The model showcases a clear dependency on key game metrics such as ball possession, successful passes, and shot attempts in making predictions.
+
+```{r confusion matrix}
+# Predict outcomes for the test data
+predictions <- predict(decision_tree, newdata = test_data, type = "class")
+
+# Generate a confusion matrix
+confusion_matrix <- table(test_data$target, predictions)
+
+# Print the confusion matrix
+print("Confusion Matrix:")
+print(confusion_matrix)
+
+# Calculate model accuracy
+accuracy <- sum(diag(confusion_matrix)) / sum(confusion_matrix)
+print(paste("Model Accuracy:", round(accuracy, 3)))
+
+library(caret)
+
+# Generate detailed performance metrics
+confusion_details <- confusionMatrix(predictions, as.factor(test_data$target))
+print(confusion_details)
+```
+
+The decision tree model achieves an overall accuracy of 60.7%, performing best for home wins (Class 1) with a sensitivity of 81.2%, indicating strong predictive power for this class. However, the model struggles with draws (Class 0), achieving a low sensitivity of 23.4%, meaning it frequently misses draw predictions. For away wins (Class 2), the model performs moderately well with a sensitivity of 65.5%.
+
+The confusion matrix reveals a tendency to overpredict home wins while underestimating draws and away wins. 
+
+```{r Insights and Market Inefficiencies} 
+#Normalize Implied Probabilities from Odds Data
+odds_data$Pr_Home_Win <- 1 / odds_data$X1
+odds_data$Pr_Draw     <- 1 / odds_data$X
+odds_data$Pr_Away_Win <- 1 / odds_data$X2
+
+# Normalize probabilities to ensure they sum to 1
+total_probs <- odds_data$Pr_Home_Win + odds_data$Pr_Draw + odds_data$Pr_Away_Win
+odds_data$Pr_Home_Win <- odds_data$Pr_Home_Win / total_probs
+odds_data$Pr_Draw     <- odds_data$Pr_Draw / total_probs
+odds_data$Pr_Away_Win <- odds_data$Pr_Away_Win / total_probs
+
+# Select relevant columns from odds_data
+odds_data_selected <- odds_data[, c("fixture_id", "halftime", "minute", 
+                                    "Pr_Home_Win", "Pr_Draw", "Pr_Away_Win")]
+
+#Predict Probabilities Using the Decision Tree Model
+predicted_probs <- predict(decision_tree, newdata = prepared_data, type = "prob")
+
+# Convert the predicted probabilities to a DataFrame
+predicted_probs_df <- as.data.frame(predicted_probs)
+
+# Rename the columns for clarity
+colnames(predicted_probs_df) <- c("Pred_Tie", "Pred_Home_Win", "Pred_Away_Win")
+
+# Combine predicted probabilities with prepared_data
+prepared_data <- cbind(prepared_data, predicted_probs_df)
+
+# Convert halftime in odds_data to match prepared_data format
+odds_data$halftime <- ifelse(odds_data$halftime == "1st-half", 1, 
+                             ifelse(odds_data$halftime == "2nd-half", 2, NA))
+
+# Select relevant columns from odds_data
+odds_data_selected <- odds_data[, c("fixture_id", "halftime", "minute", 
+                                    "Pr_Home_Win", "Pr_Draw", "Pr_Away_Win")]
+
+
+
+#Merge Prepared Data with Odds Data Based on Fixture ID, Halftime, and Minute
+prepared_data <- merge(prepared_data, odds_data_selected, 
+                       by = c("fixture_id", "halftime", "minute"), 
+                       all.x = TRUE)
+
+#Calculate Absolute Differences Between Implied and Predicted Probabilities
+prepared_data$Diff_Home_Win <- abs(prepared_data$Pr_Home_Win - prepared_data$Pred_Home_Win)
+prepared_data$Diff_Draw     <- abs(prepared_data$Pr_Draw - prepared_data$Pred_Tie)
+prepared_data$Diff_Away_Win <- abs(prepared_data$Pr_Away_Win - prepared_data$Pred_Away_Win)
+
+#Display the First Few Rows to Confirm Changes
+head(prepared_data[, c("fixture_id", "halftime", "minute", 
+                       "Pr_Home_Win", "Pred_Home_Win", "Diff_Home_Win",
+                       "Pr_Draw", "Pred_Tie", "Diff_Draw", 
+                       "Pr_Away_Win", "Pred_Away_Win", "Diff_Away_Win")])
+```
+
+```{r visualize} 
+library(ggplot2)
+
+# Home Win Difference
+ggplot(prepared_data, aes(x = Diff_Home_Win)) +
+  geom_histogram(binwidth = 0.02, fill = "blue", alpha = 0.7) +
+  labs(title = "Home Win Probability Differences", x = "Difference", y = "Frequency")
+
+# Draw Difference
+ggplot(prepared_data, aes(x = Diff_Draw)) +
+  geom_histogram(binwidth = 0.02, fill = "red", alpha = 0.7) +
+  labs(title = "Draw Probability Differences", x = "Difference", y = "Frequency")
+
+# Away Win Difference
+ggplot(prepared_data, aes(x = Diff_Away_Win)) +
+  geom_histogram(binwidth = 0.02, fill = "green", alpha = 0.7) +
+  labs(title = "Away Win Probability Differences", x = "Difference", y = "Frequency")
+
+
+# Combined Histogram for All Differences
+ggplot(prepared_data) +
+  geom_histogram(aes(x = Diff_Home_Win, fill = "Home Win"), binwidth = 0.02, alpha = 0.5) +
+  geom_histogram(aes(x = Diff_Draw, fill = "Draw"), binwidth = 0.02, alpha = 0.5) +
+  geom_histogram(aes(x = Diff_Away_Win, fill = "Away Win"), binwidth = 0.02, alpha = 0.5) +
+  scale_fill_manual(values = c("Home Win" = "blue", "Draw" = "red", "Away Win" = "green")) +
+  labs(title = "Combined Probability Differences",
+       x = "Difference (Predicted - Implied)", y = "Frequency", fill = "Type")
+
+
+```
+
+  The histograms illustrate the differences between predicted probabilities (from the decision tree model) and implied probabilities (from bookmaker odds) for Home Win, Draw, and Away Win outcomes. Most deviations are concentrated around zero, indicating general alignment between the model and bookmaker expectations. However, Draw outcomes show a wider spread of differences, suggesting greater difficulty in predicting ties. The tails in all three distributions highlight instances where the model significantly diverges from the implied probabilities, potentially indicating inefficiencies in the market or overlooked factors by the model.
+
+```{r importance} 
+# Extract and visualize feature importance from the decision tree
+importance <- decision_tree$variable.importance
+
+# Convert to a data frame for better visualization
+importance_df <- data.frame(Feature = names(importance), Importance = importance)
+
+# Sort by importance descending
+importance_df <- importance_df[order(-importance_df$Importance), ]
+
+# Visualize the feature importance
+library(ggplot2)
+
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Feature Importance in Decision Tree Model",
+       x = "Features",
+       y = "Importance Score") +
+  theme_minimal()
+
+```
+
+
+Net_Goal_Difference and current_state are the top contributors, indicating their strong influence on predicting match outcomes.
+Features like Goal_Ratio, Goals...home, and Combined_Goals also play significant roles.
+Features with low scores, such as Shots.Total...away and Dangerous_Attacks_Ratio, contribute minimally.
+
+```{r market inefficiency analysis} 
+
+# Filter rows with significant deviations (greater than a threshold, e.g., 0.15)
+threshold <- 0.15
+significant_devs <- prepared_data[prepared_data$Diff_Home_Win > threshold | 
+                                  prepared_data$Diff_Draw > threshold | 
+                                  prepared_data$Diff_Away_Win > threshold, ]
+
+# Display rows with significant deviations
+head(significant_devs[, c("fixture_id", "halftime", "minute", 
+                          "Pr_Home_Win", "Pred_Home_Win", "Diff_Home_Win",
+                          "Pr_Draw", "Pred_Tie", "Diff_Draw",
+                          "Pr_Away_Win", "Pred_Away_Win", "Diff_Away_Win")])
+
+# Summary statistics of significant deviations
+#summary(significant_devs[, c("Diff_Home_Win", "Diff_Draw", "Diff_Away_Win")])
+
+# Find the top 10 rows with the largest deviations
+top_deviations <- significant_devs[order(-significant_devs$Diff_Home_Win, 
+                                         -significant_devs$Diff_Draw, 
+                                         -significant_devs$Diff_Away_Win), ]
+#head(top_deviations, 10)
+
+```
+
+
+```{r visualize deviations} 
+
+
+# Boxplot for deviations
+ggplot(significant_devs) +
+  geom_boxplot(aes(x = "Home Win", y = Diff_Home_Win), fill = "blue", alpha = 0.7) +
+  geom_boxplot(aes(x = "Draw", y = Diff_Draw), fill = "red", alpha = 0.7) +
+  geom_boxplot(aes(x = "Away Win", y = Diff_Away_Win), fill = "green", alpha = 0.7) +
+  labs(title = "Distribution of Significant Deviations", 
+       x = "Outcome", y = "Deviation")
+       
+```
+
+
+  The boxplot highlights the distribution of significant deviations between the predicted probabilities (from the decision tree) and the implied probabilities (from bookmaker odds) for Home Win, Draw, and Away Win outcomes. Deviations for Home Win and Away Win outcomes are larger and show a wider spread with many outliers, suggesting greater disagreement between the model and bookmaker odds in these cases. In contrast, Draw outcomes have smaller deviations and a more concentrated distribution, indicating better alignment. The presence of substantial outliers across all three outcomes suggests potential inefficiencies in the betting market or areas where the model struggles, warranting further investigation into these specific cases.
+
+# Conclusion
+
+In this homework, we used a decision tree model to predict football match outcomes and compared the predictions with bookmaker-implied probabilities. The results showed that the model overestimates home wins and underestimates draws and away wins, pointing to market inefficiencies. Significant deviations were observed, especially for draws, suggesting areas where the model and market expectations differ. Improving features and testing advanced methods like Random Forest can help enhance the model's accuracy.
+
+# References
+
+This homework assignment includes assistance from ChatGPT for generating ideas, problem-solving approaches, and explanations related to the tasks. I ensured that the final implementation and coding were completed by myself in alignment with the course’s academic integrity guidelines.
