@@ -1,0 +1,1349 @@
+---
+title: "IE582 Project Code"
+author: "Burcu - Nilgun"
+date: "2025-01-12"
+output: html_document
+---
+
+```{r load-libraries, message=FALSE, warning=FALSE, include= FALSE, results='hide'}
+# Load necessary libraries
+
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyselect)
+```
+
+```{r load, , message=FALSE, warning=FALSE, include= FALSE,results='hide'}
+# Load the data set 
+data <- read.csv("/Users/burcucestan/Desktop/project/match_data", header=TRUE)
+#data <- read.csv("/Users/nilgunozturk/Desktop/project/match_data", header=TRUE)
+```
+
+```{r preprocessing, message=FALSE, warning=FALSE, results='hide', include= FALSE}
+
+# Filtering the data
+# Remove rows where "suspended" or "stopped" is TRUE
+filtered_data <- data[data$suspended == "False" & data$stopped == "False", ]
+
+# Retain 'result' and 'halftime' columns for further steps
+results <- filtered_data$result
+halftime <- filtered_data$halftime
+
+# Add 'result' and 'halftime' columns to training data
+filtered_data <- filtered_data %>% 
+  mutate(result = results, halftime = halftime)
+
+
+# Add a new column for the "actual minute" of the match
+filtered_data <- filtered_data %>%
+  mutate(
+    actual_minute = ifelse(halftime == "1st-half", minute, minute + 45)
+  )
+
+# Convert 'match_start_datetime' to Date type 
+filtered_data$match_start_datetime <- as.Date(filtered_data$match_start_datetime)
+
+# Calculate the percentage of missing values for each column
+missing_percentage <- colSums(is.na(filtered_data)) / nrow(filtered_data) * 100
+
+# Remove columns with more than 70% missing data
+columns_to_remove <- names(missing_percentage[missing_percentage > 70])
+filtered_data <- filtered_data[, !(names(filtered_data) %in% columns_to_remove)]
+
+# Add a date column in a comparable format
+filtered_data <- filtered_data %>%
+  mutate(match_date = as.Date(match_start_datetime, format = "%Y-%m-%d"))
+
+
+training_data <- filtered_data %>%
+  filter(match_start_datetime < as.Date("2024-11-01"))
+
+test_data <- filtered_data %>%
+  filter(match_start_datetime >= as.Date("2024-11-01"))
+
+
+# Fill missing values in columns
+
+# Function to calculate the mode
+get_mode <- function(x) {
+  unique_vals <- unique(x)
+  unique_vals[which.max(tabulate(match(x, unique_vals)))]
+}
+
+# Loop through all columns
+for (col in colnames(training_data)) {
+  column_data <- training_data[[col]]
+  
+  # Skip if the column is entirely missing
+  if (all(is.na(column_data))) next
+  
+  if (is.numeric(column_data)) {
+    # Calculate skewness: Mean - Median
+    skewness <- mean(column_data, na.rm = TRUE) - median(column_data, na.rm = TRUE)
+    if (abs(skewness) < 0.5) {
+      # Symmetric: Fill with mean
+      training_data[[col]][is.na(training_data[[col]])] <- mean(column_data, na.rm = TRUE)
+    } else {
+      # Skewed: Fill with median
+      training_data[[col]][is.na(training_data[[col]])] <- median(column_data, na.rm = TRUE)
+    }
+  } else if (is.factor(column_data) || is.character(column_data)) {
+    # Categorical: Fill with mode
+    training_data[[col]][is.na(training_data[[col]])] <- get_mode(column_data[!is.na(column_data)])
+  }
+}
+
+# Function to calculate the mode
+get_mode <- function(x) {
+  # Remove NA values
+  x <- na.omit(x)
+  unique_vals <- unique(x)
+  
+  if (length(unique_vals) == 0) return(NA)  # Return NA if no unique values
+  unique_vals[which.max(tabulate(match(x, unique_vals)))]
+}
+
+
+# Apply the same missing value imputation strategy to test data
+for (col in colnames(test_data)) {
+  column_data <- test_data[[col]]
+  
+  # Skip if the column is entirely missing
+  if (all(is.na(column_data))) next
+  
+  if (is.numeric(column_data)) {
+    # Check if the column has enough non-missing values to calculate skewness
+    if (sum(!is.na(training_data[[col]])) > 1) {
+      # Calculate skewness: Mean - Median
+      skewness <- mean(training_data[[col]], na.rm = TRUE) - median(training_data[[col]], na.rm = TRUE)
+      if (abs(skewness) < 0.5) {
+        test_data[[col]][is.na(test_data[[col]])] <- mean(training_data[[col]], na.rm = TRUE)
+      } else {
+        test_data[[col]][is.na(test_data[[col]])] <- median(training_data[[col]], na.rm = TRUE)
+      }
+    } else {
+      # If there are not enough non-missing values, use the mean as a fallback
+      test_data[[col]][is.na(test_data[[col]])] <- mean(training_data[[col]], na.rm = TRUE)
+    }
+  } else if (is.factor(column_data) || is.character(column_data)) {
+    # Categorical: Fill with mode from training data
+    non_na_training_data <- training_data[[col]][!is.na(training_data[[col]])]
+    test_data[[col]][is.na(test_data[[col]])] <- get_mode(non_na_training_data)
+  }
+}
+
+
+
+# Total number of missing values in the entire data frame
+total_missing <- sum(is.na(training_data))
+print(total_missing)
+
+total_missing_test <- sum(is.na(test_data))
+print(total_missing_test)
+
+# Check the dimensions of the training and test datasets
+cat("\nDimensions of the training dataset:\n")
+dim(training_data)
+
+cat("\nDimensions of the test dataset:\n")
+dim(test_data)
+
+```
+
+
+
+```{r task2, , message=FALSE, warning=FALSE, include= FALSE, results='hide'}
+
+# Case 1: Goals in the first 10 minutes
+training_data <- training_data %>%
+  mutate(
+    Goal_in_first_10_mins = ifelse(
+      actual_minute <= 10 & (`Goals...home` + `Goals...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 2: Goals after the 85th minute
+training_data <- training_data %>%
+  mutate(
+    Goal_after_85_mins = ifelse(
+      actual_minute > 85 & (`Goals...home` + `Goals...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 3: Substitutions in the first 30 minutes
+training_data <- training_data %>%
+  mutate(
+    Substitutions_in_first_30_mins = ifelse(
+      halftime == "1st-half" & actual_minute <= 30 &
+      (`Substitutions...home` + `Substitutions...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 4: Penalty Awarded in the First 15 Minutes
+training_data <- training_data %>%
+  mutate(
+    Penalty_in_first_15_mins = ifelse(
+      halftime == "1st-half" & actual_minute <= 15 &
+      (`Penalties...home` + `Penalties...away`) >= 1,
+      TRUE, FALSE
+    )
+  )
+
+# Case 5: Multiple Yellow Cards in the First 20 Minutes
+training_data <- training_data %>%
+  mutate(
+    Multiple_yellow_cards_first_20_mins = ifelse(
+      halftime == "1st-half" & actual_minute <= 20 &
+      (`Yellowcards...home` + `Yellowcards...away`) > 1,
+      TRUE, FALSE
+    )
+  )
+
+
+```
+
+```{r task print noise cases, , message=FALSE, warning=FALSE, echo=FALSE}
+# Calculate and print the number of matches fitting each case
+cat("Number of matches with a goal before 10 minutes: ", sum(training_data$Goal_in_first_10_mins), "\n")
+cat("Number of matches with a goal after 85 minutes: ", sum(training_data$Goal_after_85_mins), "\n")
+cat("Number of matches with substitutions in the first 30 minutes: ", 
+    sum(training_data$Substitutions_in_first_30_mins), "\n")
+cat("Number of matches with a penalty in the first 15 minutes: ", 
+    sum(training_data$Penalty_in_first_15_mins), "\n")
+cat("Number of matches with multiple yellow cards in the first 20 minutes: ", 
+    sum(training_data$Multiple_yellow_cards_first_20_mins), "\n")
+```
+
+```{r task2.2, , message=FALSE, warning=FALSE, include= FALSE, results='hide'}
+# Create a new dataset for cleaned data after removing noisy rows
+cleaned_training_data <- training_data %>%
+  filter(
+    !(Goal_in_first_10_mins | 
+      Goal_after_85_mins | 
+      Substitutions_in_first_30_mins | 
+      Penalty_in_first_15_mins | 
+      Multiple_yellow_cards_first_20_mins)
+  )
+
+#Remove irrelevant columns
+cleaned_training_data <- cleaned_training_data[, !colnames(cleaned_training_data) %in% c("Goal_in_first_10_mins", 
+                                                                 "Goal_after_85_mins", 
+                                                                 "Substitutions_in_first_30_mins", 
+                                                                 "Penalty_in_first_15_mins", 
+                                                                 "Multiple_yellow_cards_first_20_mins")]
+
+# Calculate and print the number of rows removed
+original_row_count <- nrow(training_data)
+removed_row_count <- original_row_count - nrow(cleaned_training_data)
+
+cat("Number of rows removed as noisy data: ", removed_row_count, "\n")
+cat("Number of rows in the cleaned dataset: ", nrow(cleaned_training_data), "\n")
+
+```
+
+
+```{r train test split, , message=FALSE, warning=FALSE, results='hide', include= FALSE}
+
+# Add odds columns to the cleaned training data
+cleaned_training_data <- cleaned_training_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Convert X1 to numeric
+    X2 = as.numeric(X2),  # Convert X2 to numeric
+    X = as.numeric(X),    # Convert X to numeric
+    
+    # Calculate implied probabilities
+    Pr_Home_Win = 1 / X1,  # Implied probability for home win
+    Pr_Away_Win = 1 / X2,  # Implied probability for away win
+    Pr_Tie = 1 / X,        # Implied probability for a tie
+    
+    # Normalize probabilities
+    normalization_factor = Pr_Home_Win + Pr_Away_Win + Pr_Tie,
+    Pr_Home_Win = Pr_Home_Win / normalization_factor,
+    Pr_Away_Win = Pr_Away_Win / normalization_factor,
+    Pr_Tie = Pr_Tie / normalization_factor
+  ) %>%
+  select(-normalization_factor)  # Remove temporary column
+
+# Add odds columns to the cleaned test data
+test_data <- test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Convert X1 to numeric
+    X2 = as.numeric(X2),  # Convert X2 to numeric
+    X = as.numeric(X),    # Convert X to numeric
+    
+    # Calculate implied probabilities
+    Pr_Home_Win = 1 / X1,  # Implied probability for home win
+    Pr_Away_Win = 1 / X2,  # Implied probability for away win
+    Pr_Tie = 1 / X,        # Implied probability for a tie
+    
+    # Normalize probabilities
+    normalization_factor = Pr_Home_Win + Pr_Away_Win + Pr_Tie,
+    Pr_Home_Win = Pr_Home_Win / normalization_factor,
+    Pr_Away_Win = Pr_Away_Win / normalization_factor,
+    Pr_Tie = Pr_Tie / normalization_factor
+  ) %>%
+  select(-normalization_factor)  # Remove temporary column
+
+# Verify the dimensions of training and test datasets
+cat("Dimensions of the training dataset:", dim(cleaned_training_data), "\n")
+cat("Dimensions of the test dataset:", dim(test_data), "\n")
+
+# Filter the training data to focus on the first half
+# Choose the first available minute in the first half with valid probabilities
+
+# Filter training data to focus on the first half and select one decision point per match
+training_decision_data <- cleaned_training_data %>%
+  filter(halftime == "1st-half") %>%
+  group_by(fixture_id) %>%
+  filter(minute == min(minute, na.rm = TRUE)) %>% 
+  ungroup()
+
+cat("Training decision data size:", nrow(training_decision_data), "\n")
+
+
+
+# Filter test data to focus on the first half and select one decision point per match
+test_decision_data <- test_data %>%
+  filter(halftime == "1st-half") %>%
+  group_by(fixture_id) %>%
+  filter(minute == min(minute, na.rm = TRUE)) %>% 
+  ungroup()
+
+cat("Test decision data size:", nrow(test_decision_data), "\n")
+
+
+training_data <- training_decision_data
+test_data <- test_decision_data
+```
+
+```{r feature engineering, , message=FALSE, warning=FALSE, results='hide', include= FALSE}
+
+# Feature Engineering for Training Data
+training_data <- training_data %>%
+  mutate(
+    # Derived Features
+    Net_Goal_Difference = Goals...home - Goals...away,
+    Possession_Imbalance = Ball.Possession.....home - Ball.Possession.....away,
+    Shot_Effort_Difference = Goal.Attempts...home - Goal.Attempts...away,
+    Match_Minute_Tracker = ifelse(halftime == "1st-half", minute, minute + 45),
+    
+    # Ratios
+    Goal_Ratio = ifelse(Goals...away == 0, Goals...home, Goals...home / Goals...away),
+    Dangerous_Attacks_Ratio = ifelse(Dangerous.Attacks...away == 0,
+                                     Dangerous.Attacks...home,
+                                     Dangerous.Attacks...home / Dangerous.Attacks...away),
+    
+    # Flag Variables
+    Possession_Dominance_Flag = ifelse(abs(Possession_Imbalance) > 20, 1, 0)
+  ) %>%
+  # Define Target Variable
+  mutate(
+    target = ifelse(result == "1", 1,  # Home Win
+                    ifelse(result == "2", 2, 0)),  # Away Win or Draw
+    target = factor(target, levels = c(0, 1, 2), labels = c("Draw", "Home Win", "Away Win"))
+  ) %>%
+  # Remove Irrelevant Columns
+  select(-matches(paste(c(
+    "current_time", "half_start_datetime", "match_start_datetime",
+    "latest_bookmaker_update", "suspended", "stopped", "name", "second", "ticking",
+    "result", "final_score", "fixture_id", "match_date", "minute", "halftime"
+  ), collapse = "|")))
+
+# Ensure no missing values in the target column
+training_data <- training_data[!is.na(training_data$target), ]
+
+# Check the structure of the prepared training dataset
+cat("Structure of training data after feature engineering:\n")
+str(training_data)
+
+# Feature Engineering for Test Data
+test_data <- test_data %>%
+  mutate(
+    # Derived Features
+    Net_Goal_Difference = Goals...home - Goals...away,
+    Possession_Imbalance = Ball.Possession.....home - Ball.Possession.....away,
+    Shot_Effort_Difference = Goal.Attempts...home - Goal.Attempts...away,
+    Match_Minute_Tracker = ifelse(halftime == "1st-half", minute, minute + 45),
+    
+    # Ratios
+    Goal_Ratio = ifelse(Goals...away == 0, Goals...home, Goals...home / Goals...away),
+    Dangerous_Attacks_Ratio = ifelse(Dangerous.Attacks...away == 0,
+                                     Dangerous.Attacks...home,
+                                     Dangerous.Attacks...home / Dangerous.Attacks...away),
+    
+    # Flag Variables
+    Possession_Dominance_Flag = ifelse(abs(Possession_Imbalance) > 20, 1, 0)
+  ) %>%
+  # Define Target Variable
+  mutate(
+    target = ifelse(result == "1", 1,  # Home Win
+                    ifelse(result == "2", 2, 0)),  # Away Win or Draw
+    target = factor(target, levels = c(0, 1, 2), labels = c("Draw", "Home Win", "Away Win"))
+  ) %>%
+  # Remove Irrelevant Columns
+  select(-matches(paste(c(
+    "current_time", "half_start_datetime", "match_start_datetime",
+    "latest_bookmaker_update", "suspended", "stopped", "name", "second", "ticking",
+    "result", "final_score", "fixture_id", "match_date", "minute", "halftime"
+  ), collapse = "|")))
+
+# Ensure no missing values in the target column
+test_data <- test_data[!is.na(test_data$target), ]
+
+# Check the structure of the prepared test dataset
+cat("Structure of test data after feature engineering:\n")
+str(test_data)
+
+
+# Check dimensions of the training dataset
+cat("Dimensions of the cleaned training dataset after feature engineering:\n")
+print(dim(training_data))
+
+# Check dimensions of the test dataset
+cat("Dimensions of the cleaned test dataset after feature engineering:\n")
+print(dim(test_data))
+
+# Verify that the number of features (columns) is consistent
+if (ncol(training_data) == ncol(test_data)) {
+  cat("The number of columns in the training and test datasets is consistent.\n")
+} else {
+  cat("Warning: The number of columns in the training and test datasets is not consistent!\n")
+}
+
+# Display the names of columns to check for mismatches
+cat("\nColumn names in the training dataset:\n")
+print(colnames(training_data))
+
+cat("\nColumn names in the test dataset:\n")
+print(colnames(test_data))
+
+
+
+```
+
+
+```{r dt, , message=FALSE, warning=FALSE, results='hide', echo= FALSE}
+
+# Load necessary libraries
+library(rpart)       # For Decision Tree
+library(rpart.plot)  # For visualizing the tree
+library(caret)       # For confusionMatrix
+library(dplyr)       # For data manipulation
+
+# Ensure the odds columns are numeric
+test_data <- test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Odds for Home Win
+    X2 = as.numeric(X2),  # Odds for Away Win
+    X = as.numeric(X)     # Odds for Draw
+  )
+
+
+# Function to calculate returns based on predictions and actual outcomes
+# Returns are calculated as follows:
+# - If the prediction matches the actual result:
+#   - For a Home Win: (Odds_Home_Win - 1)
+#   - For an Away Win: (Odds_Away_Win - 1)
+#   - For a Draw: (Odds_Draw - 1)
+# - If the prediction does not match the actual result:
+#   - Return is -1 (loss of the stake)
+# Function to calculate returns based on predictions and actual outcomes
+calculate_returns <- function(predictions, actuals, odds_home, odds_away, odds_draw) {
+  returns <- ifelse(
+    predictions == actuals,
+    ifelse(predictions == "Home_Win", odds_home - 1,
+           ifelse(predictions == "Away_Win", odds_away - 1,
+                  odds_draw - 1)),
+    -1  # Loss of the stake
+  )
+  return(returns)
+}
+
+# ---- Decision Tree Without Cross-Validation (No CV) ----
+
+cat("Training Decision Tree Model Without Cross-Validation (No CV)...\n")
+
+# Train the Decision Tree model without Cross-Validation
+dt_model_no_cv <- rpart(target ~ ., data = training_data, method = "class")
+
+# Visualize the Decision Tree
+rpart.plot(dt_model_no_cv, type = 2, extra = 104, under = TRUE, fallen.leaves = TRUE, main = "Decision Tree (No CV)")
+
+# Predict outcomes on the test data
+dt_predictions_no_cv <- predict(dt_model_no_cv, test_data, type = "class")
+
+# Evaluate accuracy
+dt_accuracy_no_cv <- mean(dt_predictions_no_cv == test_data$target)
+cat("Decision Tree Accuracy (No CV):", dt_accuracy_no_cv, "\n")
+
+# Calculate return (profitability)
+dt_returns_no_cv <- calculate_returns(
+  predictions = dt_predictions_no_cv,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+dt_total_return_no_cv <- sum(dt_returns_no_cv)
+cat("Decision Tree Total Return (No CV):", dt_total_return_no_cv, "\n")
+
+# Generate and print the confusion matrix
+dt_cm_no_cv <- confusionMatrix(data = dt_predictions_no_cv, reference = test_data$target)
+print(dt_cm_no_cv)
+
+# ---- Decision Tree With Cross-Validation (CV) ----
+
+cat("\nTraining Decision Tree Model With Cross-Validation (CV)...\n")
+
+# Set up cross-validation with an expanded cp grid
+dt_train_control <- trainControl(method = "cv", number = 10)  # 10-fold cross-validation
+dt_tune_grid <- expand.grid(cp = seq(0.001, 0.05, 0.005))  # Test cp values between 0.001 and 0.05
+
+# Train the Decision Tree model with cross-validation
+dt_model_cv <- train(
+  target ~ ., 
+  data = training_data, 
+  method = "rpart", 
+  trControl = dt_train_control, 
+  tuneGrid = dt_tune_grid
+)
+
+# Print the best model and its cp value
+cat("Best Decision Tree Model from Cross-Validation:\n")
+print(dt_model_cv)
+cat("\nBest Complexity Parameter (cp):", dt_model_cv$bestTune$cp, "\n")
+
+# Visualize the best Decision Tree model
+rpart.plot(dt_model_cv$finalModel, type = 2, extra = 104, under = TRUE, fallen.leaves = TRUE, main = "Decision Tree (CV)")
+
+# Predict outcomes on the test data
+dt_predictions_cv <- predict(dt_model_cv, newdata = test_data)
+
+# Evaluate accuracy
+dt_accuracy_cv <- mean(dt_predictions_cv == test_data$target)
+cat("Decision Tree Accuracy (CV):", dt_accuracy_cv, "\n")
+
+# Calculate return (profitability)
+dt_returns_cv <- calculate_returns(
+  predictions = dt_predictions_cv,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+dt_total_return_cv <- sum(dt_returns_cv)
+cat("Decision Tree Total Return (CV):", dt_total_return_cv, "\n")
+
+# Generate and print the confusion matrix
+dt_cm_cv <- confusionMatrix(data = dt_predictions_cv, reference = test_data$target)
+print(dt_cm_cv)
+
+# ---- Decision Tree With Hyperparameter Tuning ----
+
+cat("\nTraining Decision Tree Model With Hyperparameter Tuning...\n")
+
+# Set up cross-validation for hyperparameter tuning
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+tune_grid <- expand.grid(cp = seq(0.001, 0.05, by = 0.005))  # Complexity parameter range
+
+# Train the decision tree model with hyperparameter tuning
+dt_model_tuned <- train(
+  target ~ ., 
+  data = training_data, 
+  method = "rpart", 
+  trControl = train_control, 
+  tuneGrid = tune_grid, 
+  metric = "Accuracy"  # Optimize for accuracy
+)
+
+# Print the best model and its parameters
+cat("Best Decision Tree Model Parameters:\n")
+print(dt_model_tuned$bestTune)
+
+# Visualize the tuned decision tree
+rpart.plot(dt_model_tuned$finalModel, type = 2, extra = 104, under = TRUE, fallen.leaves = TRUE, main = "Decision Tree (Tuned Model)")
+
+# Predict outcomes on the test data using the tuned model
+dt_predictions_tuned <- predict(dt_model_tuned, newdata = test_data)
+
+# Evaluate accuracy of the tuned model
+dt_accuracy_tuned <- mean(dt_predictions_tuned == test_data$target)
+cat("Decision Tree Accuracy (Tuned):", dt_accuracy_tuned, "\n")
+
+# Calculate return (profitability)
+dt_returns_tuned <- calculate_returns(
+  predictions = dt_predictions_tuned,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+dt_total_return_tuned <- sum(dt_returns_tuned)
+cat("Decision Tree Total Return (Tuned):", dt_total_return_tuned, "\n")
+
+# Generate confusion matrix for the tuned model
+dt_cm_tuned <- confusionMatrix(data = dt_predictions_tuned, reference = test_data$target)
+print(dt_cm_tuned)
+
+# ---- Comparison of Model Performance ----
+
+cat("\nComparing Model Performance...\n")
+
+# Create a data frame to compare the models
+model_comparison <- data.frame(
+  Model = c("Decision Tree (No CV)", "Decision Tree (CV)", "Decision Tree (Tuned)"),
+  Accuracy = c(dt_accuracy_no_cv, dt_accuracy_cv, dt_accuracy_tuned),
+  Total_Return = c(dt_total_return_no_cv, dt_total_return_cv, dt_total_return_tuned)
+)
+
+# Print the comparison table
+print(model_comparison)
+
+
+
+```
+
+```{r dt2, echo= FALSE}
+
+# Display Confusion Matrix for No CV
+cat("Confusion Matrix for Decision Tree (No CV):\n")
+print(dt_cm_no_cv)
+
+# Display Confusion Matrix for CV
+cat("Confusion Matrix for Decision Tree (CV):\n")
+print(dt_cm_cv)
+
+# Display Confusion Matrix for Tuned Model
+cat("Confusion Matrix for Decision Tree (Tuned):\n")
+print(dt_cm_tuned)
+
+# Display the comparison table
+cat("Comparison of Model Performance:\n")
+print(model_comparison)
+
+
+
+```
+
+
+```{r random forest, message=FALSE, include= FALSE}
+# Load necessary libraries
+library(randomForest)
+library(caret)  # For confusionMatrix and train function
+
+# Function to calculate returns based on predictions and actual outcomes
+calculate_returns <- function(predictions, actuals, odds_home, odds_away, odds_draw) {
+  returns <- ifelse(
+    predictions == actuals,
+    ifelse(predictions == "Home_Win", odds_home - 1,
+           ifelse(predictions == "Away_Win", odds_away - 1,
+                  odds_draw - 1)),
+    -1  # Loss of the stake
+  )
+  return(returns)
+}
+
+# Ensure the odds columns are numeric
+test_data <- test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Odds for Home Win
+    X2 = as.numeric(X2),  # Odds for Away Win
+    X = as.numeric(X)     # Odds for Draw
+  )
+
+# ---- Random Forest Model Without Cross-Validation ----
+cat("\nTraining Random Forest Model Without Cross-Validation...\n")
+
+# Step 1: Train the Random Forest model directly on the training data
+rf_model_no_cv <- randomForest(
+  target ~ ., 
+  data = training_data, 
+  ntree = 100,             # Set the number of trees to 100
+  importance = TRUE        # Enables calculation of variable importance
+)
+
+# Step 2: Predict outcomes on the test data using the trained model
+rf_predictions_no_cv <- predict(rf_model_no_cv, newdata = test_data)
+
+# Step 3: Evaluate accuracy
+rf_accuracy_no_cv <- mean(rf_predictions_no_cv == test_data$target)
+
+# Step 4: Calculate return (profitability)
+rf_returns_no_cv <- calculate_returns(
+  predictions = rf_predictions_no_cv,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+rf_total_return_no_cv <- sum(rf_returns_no_cv)
+
+# Step 5: Generate and print confusion matrix
+rf_cm_no_cv <- confusionMatrix(data = factor(rf_predictions_no_cv), reference = factor(test_data$target))
+
+# ---- Random Forest Model With Cross-Validation ----
+cat("\nTraining Random Forest Model With Cross-Validation...\n")
+
+# Set up cross-validation using caret's train function
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Train the Random Forest model using cross-validation
+rf_model_cv <- train(
+  target ~ ., 
+  data = training_data, 
+  method = "rf",           # Random Forest method
+  trControl = train_control, 
+  tuneLength = 10,         # Number of different mtry values to try (optional)
+  ntree = 100,             # Set the number of trees to 100
+  importance = TRUE        # Enables calculation of variable importance
+)
+
+# Predict outcomes on the test data using the best model
+rf_predictions_cv <- predict(rf_model_cv, newdata = test_data)
+
+# Evaluate accuracy
+rf_accuracy_cv <- mean(rf_predictions_cv == test_data$target)
+
+# Calculate return (profitability)
+rf_returns_cv <- calculate_returns(
+  predictions = rf_predictions_cv,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+rf_total_return_cv <- sum(rf_returns_cv)
+
+# Generate and print confusion matrix
+rf_cm_cv <- confusionMatrix(data = factor(rf_predictions_cv), reference = factor(test_data$target))
+
+# ---- Model Comparison ----
+cat("\nModel Comparison Results:\n")
+
+# Compare Accuracy
+cat("\nAccuracy Comparison:\n")
+cat("Random Forest (Without CV) Accuracy: ", rf_accuracy_no_cv, "\n")
+cat("Random Forest (With CV) Accuracy: ", rf_accuracy_cv, "\n")
+
+# Compare Total Returns
+cat("\nTotal Return Comparison:\n")
+cat("Random Forest (Without CV) Total Return: ", rf_total_return_no_cv, "\n")
+cat("Random Forest (With CV) Total Return: ", rf_total_return_cv, "\n")
+
+# Compare Confusion Matrices
+cat("\nConfusion Matrix Comparison:\n")
+cat("Random Forest (Without CV) Confusion Matrix:\n")
+print(rf_cm_no_cv)
+
+cat("\nRandom Forest (With CV) Confusion Matrix:\n")
+print(rf_cm_cv)
+
+# Compare Variable Importance
+cat("\nVariable Importance Comparison:\n")
+cat("Random Forest (Without CV) Variable Importance:\n")
+print(importance(rf_model_no_cv))
+
+cat("\nRandom Forest (With CV) Variable Importance:\n")
+print(importance(rf_model_cv$finalModel))
+
+
+```
+
+
+
+```{r rf2, echo=FALSE}
+# Display Confusion Matrix for Random Forest Without CV
+cat("Confusion Matrix for Random Forest (No CV):\n")
+print(rf_cm_no_cv)
+
+# Display Confusion Matrix for Random Forest With CV
+cat("Confusion Matrix for Random Forest (CV):\n")
+print(rf_cm_cv)
+
+# Create a data frame to compare Random Forest models
+rf_comparison <- data.frame(
+  Model = c("Random Forest (No CV)", "Random Forest (CV)"),
+  Accuracy = c(rf_accuracy_no_cv, rf_accuracy_cv),
+  Total_Return = c(rf_total_return_no_cv, rf_total_return_cv)
+)
+
+# Display the comparison table
+cat("Comparison of Random Forest Model Performance:\n")
+print(rf_comparison)
+```
+
+
+```{r multinomial log reg, message=FALSE, warning=FALSE, include=FALSE}
+# Load necessary libraries
+library(nnet)   # For multinom function (Multinomial Logistic Regression)
+library(caret)  # For confusionMatrix and train function
+library(dplyr)  # For data manipulation
+
+# Function to calculate returns based on predictions and actual outcomes
+calculate_returns <- function(predictions, actuals, odds_home, odds_away, odds_draw) {
+  returns <- ifelse(
+    predictions == actuals,
+    ifelse(predictions == "Home_Win", odds_home - 1,
+           ifelse(predictions == "Away_Win", odds_away - 1,
+                  odds_draw - 1)),
+    -1  # Loss of the stake
+  )
+  return(returns)
+}
+
+# Ensure the odds columns are numeric
+test_data <- test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Odds for Home Win
+    X2 = as.numeric(X2),  # Odds for Away Win
+    X = as.numeric(X)     # Odds for Draw
+  )
+
+# ---- Multinomial Logistic Regression Model Without Cross-Validation ----
+cat("\nTraining Multinomial Logistic Regression Model Without Cross-Validation...\n")
+
+# Step 1: Train the Multinomial Logistic Regression model directly on the training data
+multi_logistic_model_no_cv <- multinom(target ~ ., data = training_data)
+
+# Step 2: Predict outcomes on the test data using the trained model
+multi_logistic_predictions_no_cv <- predict(multi_logistic_model_no_cv, newdata = test_data)
+
+# Step 3: Evaluate accuracy
+multi_logistic_accuracy_no_cv <- mean(multi_logistic_predictions_no_cv == test_data$target)
+
+# Step 4: Calculate return (profitability)
+multi_logistic_returns_no_cv <- calculate_returns(
+  predictions = multi_logistic_predictions_no_cv,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+multi_logistic_total_return_no_cv <- sum(multi_logistic_returns_no_cv)
+
+# Step 5: Generate and print confusion matrix
+multi_logistic_cm_no_cv <- confusionMatrix(factor(multi_logistic_predictions_no_cv), factor(test_data$target))
+
+# ---- Multinomial Logistic Regression Model With Cross-Validation ----
+cat("\nTraining Multinomial Logistic Regression Model With Cross-Validation...\n")
+
+# Step 1: Set up cross-validation using caret's train function
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Step 2: Train the Multinomial Logistic Regression model using cross-validation
+multi_logistic_model_cv <- train(
+  target ~ ., 
+  data = training_data, 
+  method = "multinom",        # Multinomial Logistic Regression method
+  trControl = train_control,  # Cross-validation setup
+  trace = FALSE               # Suppress the trace output for training
+)
+
+# Step 3: Predict outcomes on the test data using the best model
+multi_logistic_predictions_cv <- predict(multi_logistic_model_cv, newdata = test_data)
+
+# Step 4: Evaluate accuracy
+multi_logistic_accuracy_cv <- mean(multi_logistic_predictions_cv == test_data$target)
+
+# Step 5: Calculate return (profitability)
+multi_logistic_returns_cv <- calculate_returns(
+  predictions = multi_logistic_predictions_cv,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+multi_logistic_total_return_cv <- sum(multi_logistic_returns_cv)
+
+# Step 6: Generate and print confusion matrix
+multi_logistic_cm_cv <- confusionMatrix(factor(multi_logistic_predictions_cv), factor(test_data$target))
+
+# ---- Model Comparison ----
+cat("\nModel Comparison Results:\n")
+
+# Compare Accuracy
+cat("\nAccuracy Comparison:\n")
+cat("Multinomial Logistic Regression (Without CV) Accuracy: ", multi_logistic_accuracy_no_cv, "\n")
+cat("Multinomial Logistic Regression (With CV) Accuracy: ", multi_logistic_accuracy_cv, "\n")
+
+# Compare Total Returns
+cat("\nTotal Return Comparison:\n")
+cat("Multinomial Logistic Regression (Without CV) Total Return: ", multi_logistic_total_return_no_cv, "\n")
+cat("Multinomial Logistic Regression (With CV) Total Return: ", multi_logistic_total_return_cv, "\n")
+
+# Compare Confusion Matrices
+cat("\nConfusion Matrix Comparison:\n")
+cat("Multinomial Logistic Regression (Without CV) Confusion Matrix:\n")
+print(multi_logistic_cm_no_cv)
+
+cat("\nMultinomial Logistic Regression (With CV) Confusion Matrix:\n")
+print(multi_logistic_cm_cv)
+
+# Compare Additional Metrics
+cat("\nConfusion Matrix Metrics Comparison:\n")
+cat("Multinomial Logistic Regression (Without CV) Accuracy: ", multi_logistic_cm_no_cv$overall["Accuracy"], "\n")
+cat("Multinomial Logistic Regression (With CV) Accuracy: ", multi_logistic_cm_cv$overall["Accuracy"], "\n")
+
+cat("\nPrecision for each class (Without CV):\n")
+print(multi_logistic_cm_no_cv$byClass[, "Precision"])
+cat("\nPrecision for each class (With CV):\n")
+print(multi_logistic_cm_cv$byClass[, "Precision"])
+
+cat("\nRecall for each class (Without CV):\n")
+print(multi_logistic_cm_no_cv$byClass[, "Recall"])
+cat("\nRecall for each class (With CV):\n")
+print(multi_logistic_cm_cv$byClass[, "Recall"])
+
+cat("\nF1 Score for each class (Without CV):\n")
+print(multi_logistic_cm_no_cv$byClass[, "F1"])
+cat("\nF1 Score for each class (With CV):\n")
+print(multi_logistic_cm_cv$byClass[, "F1"])
+
+
+```
+
+```{r mlr2, echo=FALSE}
+# Display Confusion Matrix for Multinomial Logistic Regression Without CV
+cat("Confusion Matrix for Multinomial Logistic Regression (No CV):\n")
+print(multi_logistic_cm_no_cv)
+
+# Display Confusion Matrix for Multinomial Logistic Regression With CV
+cat("Confusion Matrix for Multinomial Logistic Regression (CV):\n")
+print(multi_logistic_cm_cv)
+
+# Create a data frame to compare Multinomial Logistic Regression models
+mlr_comparison <- data.frame(
+  Model = c("Multinomial Logistic Regression (No CV)", "Multinomial Logistic Regression (CV)"),
+  Accuracy = c(multi_logistic_accuracy_no_cv, multi_logistic_accuracy_cv),
+  Total_Return = c(multi_logistic_total_return_no_cv, multi_logistic_total_return_cv)
+)
+
+# Display the comparison table
+cat("Comparison of Multinomial Logistic Regression Model Performance:\n")
+print(mlr_comparison)
+
+
+```
+
+
+```{r Linear Discriminant Analysis (LDA), , message=FALSE, warning=FALSE, include= FALSE}
+
+# Load necessary libraries
+library(MASS)    # For LDA
+library(dplyr)   # For data manipulation
+library(caret)   # For confusionMatrix and train function
+
+# Function to calculate returns based on predictions and actual outcomes
+calculate_returns <- function(predictions, actuals, odds_home, odds_away, odds_draw) {
+  returns <- ifelse(
+    predictions == actuals,
+    ifelse(predictions == "Home_Win", odds_home - 1,
+           ifelse(predictions == "Away_Win", odds_away - 1,
+                  odds_draw - 1)),
+    -1  # Loss of the stake
+  )
+  return(returns)
+}
+
+# Ensure test data is properly defined
+lda_test_data <- test_data  # Assign test_data to lda_test_data
+
+# Ensure the odds columns are numeric
+lda_test_data <- lda_test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Odds for Home Win
+    X2 = as.numeric(X2),  # Odds for Away Win
+    X = as.numeric(X)     # Odds for Draw
+  )
+
+# Identify constant columns within groups of the target variable
+constant_within_groups <- sapply(training_data, function(col) {
+  is_constant <- training_data %>%
+    group_by(target) %>%
+    summarise(unique_count = n_distinct(col)) %>%
+    summarise(all_constant = all(unique_count == 1)) %>%
+    pull(all_constant)
+  is_constant
+})
+
+# Get names of problematic columns
+problematic_columns <- names(constant_within_groups[constant_within_groups])
+print(problematic_columns)
+
+# Remove problematic columns from training and test data
+lda_train_data <- training_data[, !(names(training_data) %in% problematic_columns)]
+lda_test_data <- lda_test_data[, !(names(lda_test_data) %in% problematic_columns)]
+
+# ---- LDA Model Without Cross-Validation ----
+cat("\nTraining LDA Model Without Cross-Validation...\n")
+
+# Step 1: Train the LDA model directly on the training data
+lda_model_no_cv <- lda(target ~ ., data = lda_train_data)
+
+# Step 2: Predict outcomes on the test data using the trained model
+lda_predictions_no_cv <- predict(lda_model_no_cv, newdata = lda_test_data)$class
+
+# Step 3: Evaluate accuracy
+lda_accuracy_no_cv <- mean(lda_predictions_no_cv == lda_test_data$target)
+
+# Step 4: Calculate return (profitability)
+lda_returns_no_cv <- calculate_returns(
+  predictions = lda_predictions_no_cv,
+  actuals = lda_test_data$target,
+  odds_home = lda_test_data$X1,
+  odds_away = lda_test_data$X2,
+  odds_draw = lda_test_data$X
+)
+lda_total_return_no_cv <- sum(lda_returns_no_cv)
+
+# Step 5: Generate and print confusion matrix
+lda_cm_no_cv <- confusionMatrix(factor(lda_predictions_no_cv), factor(lda_test_data$target))
+
+# ---- LDA Model With Cross-Validation ----
+cat("\nTraining LDA Model With Cross-Validation...\n")
+
+# Step 1: Set up cross-validation using caret's train function
+train_control <- trainControl(method = "cv", number = 5)  # 5-fold cross-validation
+
+# Step 2: Train the LDA model using cross-validation
+lda_model_cv <- train(
+  target ~ ., 
+  data = lda_train_data, 
+  method = "lda",            # LDA method
+  trControl = train_control  # Cross-validation setup
+)
+
+# Step 3: Predict outcomes on the test data using the best model
+lda_predictions_cv <- predict(lda_model_cv, newdata = lda_test_data)
+
+# Step 4: Evaluate accuracy
+lda_accuracy_cv <- mean(lda_predictions_cv == lda_test_data$target)
+
+# Step 5: Calculate return (profitability)
+lda_returns_cv <- calculate_returns(
+  predictions = lda_predictions_cv,
+  actuals = lda_test_data$target,
+  odds_home = lda_test_data$X1,
+  odds_away = lda_test_data$X2,
+  odds_draw = lda_test_data$X
+)
+lda_total_return_cv <- sum(lda_returns_cv)
+
+# Step 6: Generate and print confusion matrix
+lda_cm_cv <- confusionMatrix(factor(lda_predictions_cv), factor(lda_test_data$target))
+
+# ---- Model Comparison ----
+cat("\nModel Comparison Results:\n")
+
+# Compare Accuracy
+cat("\nAccuracy Comparison:\n")
+cat("LDA (Without CV) Accuracy: ", lda_accuracy_no_cv, "\n")
+cat("LDA (With CV) Accuracy: ", lda_accuracy_cv, "\n")
+
+# Compare Total Returns
+cat("\nTotal Return Comparison:\n")
+cat("LDA (Without CV) Total Return: ", lda_total_return_no_cv, "\n")
+cat("LDA (With CV) Total Return: ", lda_total_return_cv, "\n")
+
+# Compare Confusion Matrices
+cat("\nConfusion Matrix Comparison:\n")
+cat("LDA (Without CV) Confusion Matrix:\n")
+print(lda_cm_no_cv)
+
+cat("\nLDA (With CV) Confusion Matrix:\n")
+print(lda_cm_cv)
+
+# Compare Additional Metrics
+cat("\nConfusion Matrix Metrics Comparison:\n")
+cat("LDA (Without CV) Accuracy: ", lda_cm_no_cv$overall["Accuracy"], "\n")
+cat("LDA (With CV) Accuracy: ", lda_cm_cv$overall["Accuracy"], "\n")
+
+cat("\nPrecision for each class (Without CV):\n")
+print(lda_cm_no_cv$byClass[, "Precision"])
+cat("\nPrecision for each class (With CV):\n")
+print(lda_cm_cv$byClass[, "Precision"])
+
+cat("\nRecall for each class (Without CV):\n")
+print(lda_cm_no_cv$byClass[, "Recall"])
+cat("\nRecall for each class (With CV):\n")
+print(lda_cm_cv$byClass[, "Recall"])
+
+cat("\nF1 Score for each class (Without CV):\n")
+print(lda_cm_no_cv$byClass[, "F1"])
+cat("\nF1 Score for each class (With CV):\n")
+print(lda_cm_cv$byClass[, "F1"])
+
+
+```
+
+
+```{r lda2, echo=FALSE}
+# Display Confusion Matrix for LDA Without CV
+cat("Confusion Matrix for LDA (No CV):\n")
+print(lda_cm_no_cv)
+
+# Display Confusion Matrix for LDA With CV
+cat("Confusion Matrix for LDA (CV):\n")
+print(lda_cm_cv)
+
+# Create a data frame to compare LDA models
+lda_comparison <- data.frame(
+  Model = c("LDA (No CV)", "LDA (CV)"),
+  Accuracy = c(lda_accuracy_no_cv, lda_accuracy_cv),
+  Total_Return = c(lda_total_return_no_cv, lda_total_return_cv)
+)
+
+# Display the comparison table
+cat("Comparison of LDA Model Performance:\n")
+print(lda_comparison)
+
+```
+
+```{r svm, , message=FALSE, warning=FALSE, include= FALSE}
+# Load necessary libraries
+library(e1071)  # For SVM
+library(caret)  # For confusionMatrix
+library(dplyr)  # For data manipulation
+
+# Function to calculate returns based on predictions and actual outcomes
+calculate_returns <- function(predictions, actuals, odds_home, odds_away, odds_draw) {
+  returns <- ifelse(
+    predictions == actuals,
+    ifelse(predictions == "Home_Win", odds_home - 1,
+           ifelse(predictions == "Away_Win", odds_away - 1,
+                  odds_draw - 1)),
+    -1  # Loss of the stake
+  )
+  return(returns)
+}
+
+# Preprocess test data for numeric odds
+test_data <- test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Odds for Home Win
+    X2 = as.numeric(X2),  # Odds for Away Win
+    X = as.numeric(X)     # Odds for Draw
+  )
+
+# Train the SVM model without cross-validation
+svm_model <- svm(
+  target ~ ., 
+  data = training_data, 
+  kernel = "radial", 
+  cost = 1, 
+  scale = TRUE
+)
+
+# Predict outcomes on the test data
+svm_predictions <- predict(svm_model, newdata = test_data)
+
+# Generate and print the confusion matrix
+svm_cm <- confusionMatrix(data = factor(svm_predictions), reference = factor(test_data$target))
+print(svm_cm)
+
+# Evaluate accuracy
+svm_accuracy <- mean(svm_predictions == test_data$target)
+cat("SVM Accuracy (No CV):", svm_accuracy, "\n")
+
+# Calculate return (profitability)
+svm_returns <- calculate_returns(
+  predictions = svm_predictions,
+  actuals = test_data$target,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+svm_total_return <- sum(svm_returns)
+cat("SVM Total Return (No CV):", svm_total_return, "\n")
+
+```
+
+
+```{r svm2, echo= FALSE}
+
+# Display Confusion Matrix for SVM Without CV
+cat("Confusion Matrix for SVM (No CV):\n")
+print(svm_cm)
+
+# Create a data frame to summarize SVM performance
+svm_performance <- data.frame(
+  Model = "SVM (No CV)",
+  Accuracy = svm_accuracy,
+  Total_Return = svm_total_return
+)
+
+# Display the performance table
+cat("Performance of SVM Model:\n")
+print(svm_performance)
+
+```
+
+```{r xgboost, message=FALSE, warning=FALSE, include=FALSE}
+
+# Load necessary libraries
+library(xgboost)  # For XGBoost
+library(caret)    # For confusionMatrix
+library(dplyr)    # For data manipulation
+
+# Function to calculate returns based on predictions and actual outcomes
+calculate_returns <- function(predictions, actuals, odds_home, odds_away, odds_draw) {
+  returns <- ifelse(
+    predictions == actuals,
+    ifelse(predictions == "Home_Win", odds_home - 1,
+           ifelse(predictions == "Away_Win", odds_away - 1,
+                  odds_draw - 1)),
+    -1  # Loss of the stake
+  )
+  return(returns)
+}
+
+# Ensure odds columns in test data are numeric
+test_data <- test_data %>%
+  mutate(
+    X1 = as.numeric(X1),  # Odds for Home Win
+    X2 = as.numeric(X2),  # Odds for Away Win
+    X = as.numeric(X)     # Odds for Draw
+  )
+
+# Step 1: Align Features Between Training and Test Data
+train_matrix <- model.matrix(target ~ . - 1, data = training_data)
+test_matrix <- model.matrix(target ~ . - 1, data = test_data)
+
+# Align common columns
+common_columns <- intersect(colnames(train_matrix), colnames(test_matrix))
+train_matrix <- train_matrix[, common_columns, drop = FALSE]
+test_matrix <- test_matrix[, common_columns, drop = FALSE]
+
+# Step 2: Prepare Labels for XGBoost
+train_labels <- as.numeric(training_data$target) - 1
+test_labels <- as.numeric(test_data$target) - 1
+
+# Step 3: Train the XGBoost Model
+xgb_model <- xgboost(
+  data = train_matrix,
+  label = train_labels,
+  nrounds = 100,                  
+  objective = "multi:softmax",    
+  num_class = length(unique(train_labels)),  
+  verbose = 0                     
+)
+
+# Step 4: Make Predictions
+xgb_predictions <- predict(xgb_model, test_matrix)
+
+# Convert numeric predictions back to factor levels (if necessary)
+prediction_levels <- levels(training_data$target)
+xgb_predictions <- factor(prediction_levels[xgb_predictions + 1], levels = prediction_levels)
+test_labels <- factor(prediction_levels[test_labels + 1], levels = prediction_levels)
+
+# Step 5: Evaluate Accuracy
+xgb_accuracy <- mean(xgb_predictions == test_labels)
+cat("XGBoost Accuracy:", xgb_accuracy, "\n")
+
+# Step 6: Calculate Profitability (Return)
+xgb_returns <- calculate_returns(
+  predictions = xgb_predictions,
+  actuals = test_labels,
+  odds_home = test_data$X1,
+  odds_away = test_data$X2,
+  odds_draw = test_data$X
+)
+xgb_total_return <- sum(xgb_returns)
+cat("XGBoost Total Return:", xgb_total_return, "\n")
+
+# Step 7: Generate and Print Confusion Matrix
+xgb_cm <- confusionMatrix(data = xgb_predictions, reference = test_labels)
+print(xgb_cm)
+
+# Print detailed metrics from confusion matrix
+cat("\nConfusion Matrix Metrics:\n")
+cat("XGBoost Model Accuracy:", xgb_cm$overall["Accuracy"], "\n")
+cat("Precision for each class:\n")
+print(xgb_cm$byClass[, "Precision"])
+cat("Recall for each class:\n")
+print(xgb_cm$byClass[, "Recall"])
+cat("F1 Score for each class:\n")
+print(xgb_cm$byClass[, "F1"])
+
+
+```
+
+```{r xgboost_results, echo=FALSE}
+
+# Display the confusion matrix for XGBoost
+cat("Confusion Matrix for XGBoost:\n")
+print(xgb_cm)
+
+# Create a data frame for XGBoost performance
+xgb_performance <- data.frame(
+  Model = "XGBoost",
+  Accuracy = xgb_accuracy,
+  Total_Return = xgb_total_return
+)
+
+# Display the performance table
+cat("Performance of XGBoost Model:\n")
+print(xgb_performance)
+
+
+```
+
+
+```{r comparison, message=FALSE, warning=FALSE, echo= FALSE, }
+
+# Create a data frame to compare all models
+model_comparison <- data.frame(
+  Model = c(
+    "Decision Tree (No CV)", 
+    "Decision Tree (CV)", 
+    "Decision Tree (Tuned)", 
+    "Random Forest (No CV)", 
+    "Random Forest (CV)", 
+    "Multinomial Logistic Regression (No CV)",
+    "Multinomial Logistic Regression (CV)", 
+    "LDA (No CV)", 
+    "LDA (CV)", 
+    "SVM (No CV)", 
+    "XGBoost (No CV)"
+  ),
+  Accuracy = c(
+    dt_accuracy_no_cv, 
+    dt_accuracy_cv, 
+    dt_accuracy_tuned, 
+    rf_accuracy_no_cv,  
+    rf_accuracy_cv,      
+    multi_logistic_accuracy_no_cv, 
+    multi_logistic_accuracy_cv,    
+    lda_accuracy_no_cv, 
+    lda_accuracy_cv,     
+    svm_accuracy,         
+    xgb_accuracy       
+  ),
+  Total_Return = c(
+    dt_total_return_no_cv, 
+    dt_total_return_cv, 
+    dt_total_return_tuned, 
+    rf_total_return_no_cv,  
+    rf_total_return_cv,        
+    multi_logistic_total_return_no_cv,  
+    multi_logistic_total_return_cv,         
+    lda_total_return_no_cv, 
+    lda_total_return_cv,      
+    svm_total_return,     
+    xgb_total_return        
+  )
+)
+
+
+# Print the comparison table
+print(model_comparison)
+
+```
+
+
+
+
