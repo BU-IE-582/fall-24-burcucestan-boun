@@ -18,4 +18,4 @@ Check [my repository](https://github.com/BU-IE-582/fall-24-burcucestan-boun) for
 ### Project
 
 * [Report](): Our approach to the project can be found here.
-* [Code](IE582 Project/IE582Project-code.Rmd): The code file for the Project can be found here.
+* [Code](IE582Project/IE582Project-code.Rmd): The code file for the Project can be found here.
