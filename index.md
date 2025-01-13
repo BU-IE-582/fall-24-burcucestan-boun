@@ -13,3 +13,9 @@ Check [my repository](https://github.com/BU-IE-582/fall-24-burcucestan-boun) for
 
 * [Report](https://bu-ie-582.github.io/fall-24-burcucestan-boun/files/IE582-HW2.html): My approach for Homework 2 can be found here.
 * [Code](https://bu-ie-582.github.io/fall-24-burcucestan-boun/files/IE582_hw2_code.R): The code file for Homework 2 can be found here.
+
+
+### Project
+
+* [Report](): Our approach to the project can be found here.
+* [Code](IE582 Project/IE582Project-code.Rmd): The code file for the Project can be found here.
